@@ -29,6 +29,10 @@
   box-sizing: border-box;
 }
 
+html {
+  background: #080b0e;
+}
+
 body {
   margin: 0;
   padding: 0;

@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactElement } from 'react';
+import { StrictMode, useEffect, useMemo, useState, startTransition, type CSSProperties, type MouseEvent, type ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -20,8 +20,8 @@ function Meter() {
   const [inTaskbar, setInTaskbar] = useState(false);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void invoke<Snapshot>('get_snapshot').then(setSnapshot).catch(console.error);
-    void listen<Snapshot>('metrics://snapshot', event => setSnapshot(event.payload)).then(listener => { unlisten = listener; });
+    void invoke<Snapshot>('get_snapshot').then(snap => startTransition(() => setSnapshot(snap))).catch(console.error);
+    void listen<Snapshot>('metrics://snapshot', event => startTransition(() => setSnapshot(event.payload))).then(listener => { unlisten = listener; });
     return () => unlisten?.();
   }, []);
 
@@ -70,7 +70,7 @@ function Meter() {
   } as CSSProperties;
 
   return (
-    <div className={`meter ${inTaskbar ? 'in-taskbar' : ''}`} aria-label="Network and disk monitor" style={style}>
+    <div className={`meter${inTaskbar ? ' in-taskbar' : ''}${pinned && !inTaskbar ? ' pinned' : ''}`} aria-label="Network and disk monitor" style={style}>
       {!inTaskbar && (
         <div className="meter-controls" onMouseDown={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}>
           <button className={`meter-control-btn ${pinned ? 'active' : ''}`} type="button" title={pinned ? 'Bỏ ghim' : 'Ghim trên cùng'} onClick={togglePin}>

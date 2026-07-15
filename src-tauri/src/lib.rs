@@ -228,14 +228,6 @@ fn set_overlay_visible(
     state: State<'_, MonitorState>,
     app: AppHandle,
 ) -> Result<bool, String> {
-    if state
-        .taskbar_mode
-        .lock()
-        .map_err(|_| "Taskbar mode is unavailable".to_owned())?
-        .is_enabled()
-    {
-        return Err("Turn off taskbar mode before hiding the desktop overlay".to_owned());
-    }
     let pinned = state.overlay_pinned.load(Ordering::Acquire);
     with_overlay_window(&app, |window| {
         if visible {
@@ -323,16 +315,36 @@ fn create_monitor_overlay(app: &tauri::App) -> tauri::Result<()> {
             (f64::from(width.saturating_sub(336)) / 2.0, 8.0)
         })
         .unwrap_or((20.0, 8.0));
-    WebviewWindowBuilder::new(app, "monitor-overlay", WebviewUrl::App("meter.html".into()))
+    let overlay = WebviewWindowBuilder::new(app, "monitor-overlay", WebviewUrl::App("meter.html".into()))
         .title("NetDisk Monitor")
         .inner_size(336.0, 44.0)
         .position(x, y)
         .decorations(false)
         .transparent(true)
+        .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
         .build()?;
+
+    let overlay_clamp = overlay.clone();
+    overlay.on_window_event(move |event| {
+        if let WindowEvent::Moved(pos) = event {
+            if let (Ok(Some(monitor)), Ok(win_size)) =
+                (overlay_clamp.current_monitor(), overlay_clamp.outer_size())
+            {
+                let mon_pos = monitor.position();
+                let mon_size = monitor.size();
+                let max_x = mon_pos.x + mon_size.width as i32 - win_size.width as i32;
+                let max_y = mon_pos.y + mon_size.height as i32 - win_size.height as i32;
+                let clamped_x = pos.x.max(mon_pos.x).min(max_x);
+                let clamped_y = pos.y.max(mon_pos.y).min(max_y);
+                if clamped_x != pos.x || clamped_y != pos.y {
+                    let _ = overlay_clamp.set_position(tauri::PhysicalPosition::new(clamped_x, clamped_y));
+                }
+            }
+        }
+    });
     Ok(())
 }
 #[cfg(feature = "desktop")]

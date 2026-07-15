@@ -18,7 +18,8 @@
         "height": 240,
         "skipTaskbar": true,
         "minWidth": 600,
-        "minHeight": 240
+        "minHeight": 240,
+        "transparent": true
       }
     ],
     "security": {

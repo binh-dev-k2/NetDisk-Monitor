@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, type ReactNode } from 'react';
+import { useEffect, useState, useMemo, startTransition, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Activity, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Database, HardDrive, Network, RotateCcw, SlidersHorizontal, Timer, Wifi } from 'lucide-react';
@@ -65,19 +65,20 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const applySnapshot = (next: Snapshot) => {
-      setSnapshot(next);
-      setHistory(current => ({ down: [...current.down, next.networkDownBps].slice(-28), up: [...current.up, next.networkUpBps].slice(-28), read: [...current.read, next.diskReadBps].slice(-28), write: [...current.write, next.diskWriteBps].slice(-28) }));
-      
-      setSessionNetwork(current => {
-        const nextSession = { ...current };
-        next.processes.forEach(p => {
-          const prev = nextSession[p.pid] || { down: 0, up: 0 };
-          nextSession[p.pid] = {
-            down: prev.down + p.networkDownBps,
-            up: prev.up + p.networkUpBps,
-          };
+      startTransition(() => {
+        setSnapshot(next);
+        setHistory(current => ({ down: [...current.down, next.networkDownBps].slice(-28), up: [...current.up, next.networkUpBps].slice(-28), read: [...current.read, next.diskReadBps].slice(-28), write: [...current.write, next.diskWriteBps].slice(-28) }));
+        setSessionNetwork(current => {
+          const nextSession = { ...current };
+          next.processes.forEach(p => {
+            const prev = nextSession[p.pid] || { down: 0, up: 0 };
+            nextSession[p.pid] = {
+              down: prev.down + p.networkDownBps,
+              up: prev.up + p.networkUpBps,
+            };
+          });
+          return nextSession;
         });
-        return nextSession;
       });
     };
     void invoke<Snapshot>('get_snapshot').then(applySnapshot).catch(console.error);
@@ -104,7 +105,7 @@ export default function App() {
     setSessionNetwork({});
   };
   const toggleOverlayVisible = () => void invoke('set_overlay_visible', { visible: !overlayVisible }).catch(console.error);
-  const toggleTaskbarMode = () => void invoke<boolean>('set_taskbar_mode', { enabled: !taskbarMode }).then(value => { setTaskbarMode(value); if (value) setOverlayVisible(true); }).catch(console.error);
+  const toggleTaskbarMode = () => void invoke<boolean>('set_taskbar_mode', { enabled: !taskbarMode }).then(setTaskbarMode).catch(console.error);
 
   const toggleGroup = (name: string) => {
     setExpandedGroups(prev => ({ ...prev, [name]: !prev[name] }));
@@ -304,7 +305,7 @@ export default function App() {
           <h2>HIỂN THỊ WIDGET</h2>
           <div className="control-group">
             <label className="toggle">
-              <input type="checkbox" checked={overlayVisible} disabled={taskbarMode} onChange={toggleOverlayVisible} />
+              <input type="checkbox" checked={overlayVisible} onChange={toggleOverlayVisible} />
               <span>Thanh nổi màn hình</span>
             </label>
             <label className="toggle">
