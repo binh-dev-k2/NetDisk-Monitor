@@ -40,6 +40,7 @@ struct MonitorState {
     reset_process_sessions: AtomicBool,
     overlay_settings: Mutex<OverlaySettings>,
     taskbar_mode: Mutex<TaskbarMode>,
+    overlay_pinned: AtomicBool,
 }
 
 #[cfg(feature = "desktop")]
@@ -102,6 +103,7 @@ impl Default for MonitorState {
             reset_process_sessions: AtomicBool::new(false),
             overlay_settings: Mutex::new(OverlaySettings::default()),
             taskbar_mode: Mutex::new(TaskbarMode::default()),
+            overlay_pinned: AtomicBool::new(true),
         }
     }
 }
@@ -194,9 +196,10 @@ fn resize_overlay(
     }
     drop(taskbar_mode);
     let (width, height) = overlay_window_size(width, height);
+    let pinned = state.overlay_pinned.load(Ordering::Acquire);
     with_overlay_window(&app, |window| {
-        let _ = window.set_always_on_top(true);
-        window.set_size(LogicalSize::new(width, height))
+      let _ = window.set_always_on_top(pinned);
+      window.set_size(LogicalSize::new(width, height))
     })
 }
 #[cfg(feature = "desktop")]
@@ -206,7 +209,8 @@ fn begin_overlay_drag(app: AppHandle) -> Result<(), String> {
 }
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn set_overlay_pinned(pinned: bool, app: AppHandle) -> Result<(), String> {
+fn set_overlay_pinned(pinned: bool, state: State<'_, MonitorState>, app: AppHandle) -> Result<(), String> {
+    state.overlay_pinned.store(pinned, Ordering::Release);
     with_overlay_window(&app, |window| window.set_always_on_top(pinned))
 }
 #[cfg(feature = "desktop")]
@@ -232,9 +236,10 @@ fn set_overlay_visible(
     {
         return Err("Turn off taskbar mode before hiding the desktop overlay".to_owned());
     }
+    let pinned = state.overlay_pinned.load(Ordering::Acquire);
     with_overlay_window(&app, |window| {
         if visible {
-            let _ = window.set_always_on_top(true);
+            let _ = window.set_always_on_top(pinned);
             window.show()
         } else {
             window.hide()

@@ -103,7 +103,7 @@ export default function App() {
     void invoke('reset_session_totals');
     setSessionNetwork({});
   };
-  const toggleOverlayVisible = () => void invoke<boolean>('set_overlay_visible', { visible: !overlayVisible }).then(setOverlayVisible).catch(console.error);
+  const toggleOverlayVisible = () => void invoke('set_overlay_visible', { visible: !overlayVisible }).catch(console.error);
   const toggleTaskbarMode = () => void invoke<boolean>('set_taskbar_mode', { enabled: !taskbarMode }).then(value => { setTaskbarMode(value); if (value) setOverlayVisible(true); }).catch(console.error);
 
   const toggleGroup = (name: string) => {
