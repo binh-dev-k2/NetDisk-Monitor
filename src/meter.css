@@ -1,0 +1,84 @@
+* { box-sizing: border-box; }
+:root { color: #ecf2f8; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: transparent; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+.meter { position: relative; display: grid; grid-template-columns: repeat(var(--meter-columns), minmax(0, 1fr)); grid-template-rows: repeat(var(--meter-rows), minmax(0, 1fr)); gap: 1px; min-height: 100%; padding: 2px 48px 2px 2px; border: 1px solid rgba(160, 180, 199, calc(var(--meter-opacity) * .45)); border-radius: 7px; background: rgba(18, 25, 33, var(--meter-opacity)); box-shadow: 0 6px 18px rgba(0, 0, 0, calc(var(--meter-opacity) * .2)); cursor: grab; user-select: none; }
+.meter:not(.in-taskbar) {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.meter:active { cursor: grabbing; }
+.meter-item { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 6px; border-radius: 4px; }
+.meter-item:hover { background: rgba(255, 255, 255, .06); }
+.meter-icon { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; border: 1px solid currentColor; border-radius: 4px; }
+.meter-icon svg { pointer-events: none; }
+.meter-item small { display: block; color: rgba(226, 232, 240, .72); font-size: 9px; line-height: 1.05; white-space: nowrap; }
+.meter-item b { display: block; margin-top: 1px; color: #f1f5f9; font-size: 11px; line-height: 1.05; white-space: nowrap; }
+.meter-controls {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.meter-control-btn {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  place-items: center;
+  color: #8795a3;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .06);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.meter-control-btn:hover {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, .15);
+}
+.meter-control-btn.active {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.15);
+}
+.meter.in-taskbar {
+  gap: 2px;
+  padding: 1px 10px;
+  border: 1px solid rgba(160, 180, 199, calc(var(--meter-opacity) * 0.12));
+  border-radius: 6px;
+  background: rgba(18, 25, 33, calc(var(--meter-opacity) * 0.85));
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 4px 10px rgba(0, 0, 0, 0.2);
+  cursor: default;
+}
+.meter.in-taskbar .meter-item {
+  justify-content: center;
+  gap: 0;
+  padding: 0px 4px;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+.meter.in-taskbar .meter-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.meter.in-taskbar .meter-icon { display: none; }
+.meter.in-taskbar .meter-item > span:last-child { display: flex; align-items: baseline; gap: 3px; min-width: 0; }
+.meter.in-taskbar .meter-item small { width: 10px; color: currentColor; font-size: 0; line-height: 1; }
+.meter.in-taskbar .meter-item small::after { font-size: 12px; font-weight: 700; }
+.meter.in-taskbar .down small::after { content: '↓'; }
+.meter.in-taskbar .up small::after { content: '↑'; }
+.meter.in-taskbar .read small::after { content: 'R'; }
+.meter.in-taskbar .write small::after { content: 'W'; }
+.meter.in-taskbar .meter-item b { margin: 0; color: currentColor; font-size: 12px; font-weight: 750; line-height: 1.1; }
+.meter.in-taskbar .down { color: #5bc8ef; }
+.meter.in-taskbar .up { color: #79d762; }
+.meter.in-taskbar .read { color: #f4c04b; }
+.meter.in-taskbar .write { color: #ca94f5; }
+.down { color: #5ac8ef; }.up { color: #79d762; }.read { color: #f4c04b; }.write { color: #ca94f5; }.total { color: #d5e1ea; }.duration { color: #bfcbd6; }
+.meter-empty { display: grid; min-height: 38px; place-items: center; color: #b9c5d0; font-size: 11px; }

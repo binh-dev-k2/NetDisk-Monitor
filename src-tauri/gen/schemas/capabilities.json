@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default permissions for the monitor window.","local":true,"windows":["main","monitor-overlay"],"permissions":["core:default"]}}
