@@ -416,8 +416,28 @@ fn kill_process(pid: String) -> Result<(), String> {
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "Không tìm thấy thư mục HOME".to_owned())?;
+    Ok(std::path::PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.netdisk.monitor.plist"))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_autostart_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "Không tìm thấy thư mục HOME".to_owned())?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".config")
+        .join("autostart")
+        .join("netdisk-monitor.desktop"))
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 fn get_autostart() -> Result<bool, String> {
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     {
         use std::ptr::null_mut;
         use taskbar::wide;
@@ -447,14 +467,24 @@ fn get_autostart() -> Result<bool, String> {
         }
         Ok(false)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let path = macos_launch_agent_path()?;
+        Ok(path.exists())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let path = linux_autostart_path()?;
+        Ok(path.exists())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     Ok(false)
 }
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
 fn set_autostart(enabled: bool) -> Result<bool, String> {
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     {
         use std::ptr::null_mut;
         use taskbar::wide;
@@ -491,7 +521,7 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
                 if res == 0 {
                     return Ok(true);
                 }
-                return Err("Không thể ghi Registry khởi động cùng Windows".to_owned());
+                return Err("Không thể ghi Registry khởi động cùng hệ thống".to_owned());
             } else {
                 let res = RegDeleteValueW(hkey, value_name.as_ptr());
                 RegCloseKey(hkey);
@@ -500,10 +530,52 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let path = macos_launch_agent_path()?;
+        if enabled {
+            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            let plist_content = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>com.netdisk.monitor</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>{}</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n</dict>\n</plist>",
+                exe_path.to_string_lossy()
+            );
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&path, plist_content).map_err(|e| e.to_string())?;
+            Ok(true)
+        } else {
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+            }
+            Ok(false)
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let path = linux_autostart_path()?;
+        if enabled {
+            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            let desktop_content = format!(
+                "[Desktop Entry]\nType=Application\nName=NetDisk Monitor\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+                exe_path.to_string_lossy()
+            );
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&path, desktop_content).map_err(|e| e.to_string())?;
+            Ok(true)
+        } else {
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+            }
+            Ok(false)
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         let _ = enabled;
-        Err("Tính năng này chỉ hỗ trợ trên Windows".to_owned())
+        Ok(false)
     }
 }
 
