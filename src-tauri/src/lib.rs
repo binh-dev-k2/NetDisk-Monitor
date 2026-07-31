@@ -395,6 +395,115 @@ fn start_collector(app: AppHandle) {
     });
 }
 #[cfg(feature = "desktop")]
+#[tauri::command]
+fn kill_process(pid: String) -> Result<(), String> {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let pid_usize = pid.parse::<usize>().map_err(|_| "PID không hợp lệ")?;
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    if let Some(process) = system.process(Pid::from(pid_usize)) {
+        if process.kill() {
+            return Ok(());
+        }
+        return Err("Không có quyền đóng tiến trình này".to_owned());
+    }
+    Err("Tiến trình đã đóng hoặc không tồn tại".to_owned())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn get_autostart() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use std::ptr::null_mut;
+        use taskbar::wide;
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
+        };
+
+        let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+        let value_name = wide("NetDisk Monitor");
+        let mut hkey = null_mut();
+
+        unsafe {
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) == 0 {
+                let mut type_ = 0;
+                let mut size = 0;
+                let status = RegQueryValueExW(
+                    hkey,
+                    value_name.as_ptr(),
+                    null_mut(),
+                    &mut type_,
+                    null_mut(),
+                    &mut size,
+                );
+                RegCloseKey(hkey);
+                return Ok(status == 0 && type_ == REG_SZ);
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(not(windows))]
+    Ok(false)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn set_autostart(enabled: bool) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use std::ptr::null_mut;
+        use taskbar::wide;
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY_CURRENT_USER,
+            KEY_SET_VALUE, REG_SZ,
+        };
+
+        let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+        let value_name = wide("NetDisk Monitor");
+        let mut hkey = null_mut();
+
+        unsafe {
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) != 0
+            {
+                return Err("Không thể truy cập Registry Windows".to_owned());
+            }
+
+            if enabled {
+                let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+                let exe_str = format!("\"{}\"", exe_path.to_string_lossy());
+                let exe_wide = wide(&exe_str);
+                let byte_len = (exe_wide.len() * 2) as u32;
+
+                let res = RegSetValueExW(
+                    hkey,
+                    value_name.as_ptr(),
+                    0,
+                    REG_SZ,
+                    exe_wide.as_ptr().cast(),
+                    byte_len,
+                );
+                RegCloseKey(hkey);
+                if res == 0 {
+                    return Ok(true);
+                }
+                return Err("Không thể ghi Registry khởi động cùng Windows".to_owned());
+            } else {
+                let res = RegDeleteValueW(hkey, value_name.as_ptr());
+                RegCloseKey(hkey);
+                let _ = res;
+                return Ok(false);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = enabled;
+        Err("Tính năng này chỉ hỗ trợ trên Windows".to_owned())
+    }
+}
+
+#[cfg(feature = "desktop")]
 pub fn run() {
     tauri::Builder::default()
         .manage(MonitorState::default())
@@ -441,7 +550,10 @@ pub fn run() {
             get_overlay_visible,
             set_overlay_visible,
             get_taskbar_mode,
-            set_taskbar_mode
+            set_taskbar_mode,
+            kill_process,
+            get_autostart,
+            set_autostart
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

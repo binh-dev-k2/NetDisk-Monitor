@@ -288,7 +288,7 @@ fn find_child(parent: isize, class_name: &str) -> Option<isize> {
 }
 
 #[cfg(windows)]
-fn wide(value: &str) -> Vec<u16> {
+pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 

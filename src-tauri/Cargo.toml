@@ -22,7 +22,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 sysinfo = "0.33"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry"] }
 tauri = { version = "2", features = ["tray-icon"], optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 
