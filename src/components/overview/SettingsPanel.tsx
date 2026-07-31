@@ -63,7 +63,7 @@ export function SettingsPanel({
             checked={autostart}
             onChange={e => toggleAutostart(e.target.checked)}
           />
-          <span>Khởi động cùng Windows</span>
+          <span>Khởi động cùng hệ thống</span>
         </label>
 
         <button className="reset-button" onClick={reset}>
