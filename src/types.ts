@@ -25,6 +25,7 @@ export type Snapshot = {
   processes: ProcessMetric[];
   interfaces: string[];
   totalMemoryBytes: number;
+  usedMemoryBytes: number;
 };
 
 export type History = Record<'down' | 'up' | 'read' | 'write', number[]>;

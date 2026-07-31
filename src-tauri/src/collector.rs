@@ -32,6 +32,7 @@ pub struct Collection {
     pub processes: Vec<ProcessMetric>,
     pub interfaces: Vec<String>,
     pub total_memory_bytes: u64,
+    pub used_memory_bytes: u64,
 }
 pub struct SystemCollector {
     system: System,
@@ -150,6 +151,7 @@ impl SystemCollector {
             processes,
             interfaces: self.networks.keys().map(ToString::to_string).collect(),
             total_memory_bytes: self.system.total_memory(),
+            used_memory_bytes: self.system.used_memory(),
         }
     }
 }

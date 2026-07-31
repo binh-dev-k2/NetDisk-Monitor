@@ -35,6 +35,7 @@ struct DashboardSnapshot {
     processes: Vec<ProcessMetric>,
     interfaces: Vec<String>,
     total_memory_bytes: u64,
+    used_memory_bytes: u64,
 }
 #[cfg(feature = "desktop")]
 struct MonitorState {
@@ -397,6 +398,7 @@ fn start_collector(app: AppHandle) {
                 processes,
                 interfaces: collection.interfaces,
                 total_memory_bytes: collection.total_memory_bytes,
+                used_memory_bytes: collection.used_memory_bytes,
             };
             if let Ok(mut current) = state.snapshot.lock() {
                 *current = snapshot.clone();

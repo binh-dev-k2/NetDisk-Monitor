@@ -16,6 +16,7 @@ const emptySnapshot: Snapshot = {
   processes: [],
   interfaces: [],
   totalMemoryBytes: 0,
+  usedMemoryBytes: 0,
 };
 
 const emptyHistory: History = { down: [], up: [], read: [], write: [] };

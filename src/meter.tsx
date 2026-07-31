@@ -21,6 +21,7 @@ type Snapshot = {
   sessionDurationSecs: number;
   processes?: Array<{ memoryBytes: number }>;
   totalMemoryBytes?: number;
+  usedMemoryBytes?: number;
 };
 
 type MeterItem = { label: string; value: string; tone: string; icon: ReactElement };
@@ -37,6 +38,7 @@ const empty: Snapshot = {
   sessionDurationSecs: 0,
   processes: [],
   totalMemoryBytes: 0,
+  usedMemoryBytes: 0,
 };
 
 function Meter() {
@@ -72,8 +74,9 @@ function Meter() {
   }, [snapshot.processes]);
 
   const ramText = useMemo(() => {
+    if (snapshot.usedMemoryBytes) return formatBytes(snapshot.usedMemoryBytes);
     return formatBytes(totalRam);
-  }, [totalRam]);
+  }, [snapshot.usedMemoryBytes, totalRam]);
 
   const items = useMemo(() => [
     settings.showNetworkDown && { label: 'Tải xuống', value: formatRate(snapshot.networkDownBps), tone: 'down', icon: <ArrowDown size={15} /> },
