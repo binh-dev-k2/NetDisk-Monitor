@@ -5,7 +5,9 @@ pub mod metrics;
 mod taskbar;
 #[cfg(feature = "desktop")]
 use collector::{ProcessMetric, SystemCollector};
+#[cfg(feature = "desktop")]
 use metrics::{MetricsEngine, MetricsSnapshot};
+#[cfg(feature = "desktop")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "desktop")]
 use std::{
@@ -201,8 +203,8 @@ fn resize_overlay(
     let (width, height) = overlay_window_size(width, height);
     let pinned = state.overlay_pinned.load(Ordering::Acquire);
     with_overlay_window(&app, |window| {
-      let _ = window.set_always_on_top(pinned);
-      window.set_size(LogicalSize::new(width, height))
+        let _ = window.set_always_on_top(pinned);
+        window.set_size(LogicalSize::new(width, height))
     })
 }
 #[cfg(feature = "desktop")]
@@ -212,7 +214,11 @@ fn begin_overlay_drag(app: AppHandle) -> Result<(), String> {
 }
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn set_overlay_pinned(pinned: bool, state: State<'_, MonitorState>, app: AppHandle) -> Result<(), String> {
+fn set_overlay_pinned(
+    pinned: bool,
+    state: State<'_, MonitorState>,
+    app: AppHandle,
+) -> Result<(), String> {
     state.overlay_pinned.store(pinned, Ordering::Release);
     with_overlay_window(&app, |window| window.set_always_on_top(pinned))
 }
@@ -326,17 +332,18 @@ fn create_monitor_overlay(app: &tauri::App) -> tauri::Result<()> {
             (f64::from(width.saturating_sub(336)) / 2.0, 8.0)
         })
         .unwrap_or((20.0, 8.0));
-    let overlay = WebviewWindowBuilder::new(app, "monitor-overlay", WebviewUrl::App("meter.html".into()))
-        .title("NetDisk Monitor")
-        .inner_size(336.0, 44.0)
-        .position(x, y)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .build()?;
+    let overlay =
+        WebviewWindowBuilder::new(app, "monitor-overlay", WebviewUrl::App("meter.html".into()))
+            .title("NetDisk Monitor")
+            .inner_size(336.0, 44.0)
+            .position(x, y)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .build()?;
 
     let overlay_clamp = overlay.clone();
     overlay.on_window_event(move |event| {
@@ -351,7 +358,8 @@ fn create_monitor_overlay(app: &tauri::App) -> tauri::Result<()> {
                 let clamped_x = pos.x.max(mon_pos.x).min(max_x);
                 let clamped_y = pos.y.max(mon_pos.y).min(max_y);
                 if clamped_x != pos.x || clamped_y != pos.y {
-                    let _ = overlay_clamp.set_position(tauri::PhysicalPosition::new(clamped_x, clamped_y));
+                    let _ = overlay_clamp
+                        .set_position(tauri::PhysicalPosition::new(clamped_x, clamped_y));
                 }
             }
         }
@@ -498,7 +506,13 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
         let mut hkey = null_mut();
 
         unsafe {
-            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) != 0
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                KEY_SET_VALUE,
+                &mut hkey,
+            ) != 0
             {
                 return Err("Không thể truy cập Registry Windows".to_owned());
             }
@@ -582,10 +596,12 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
 #[cfg(feature = "desktop")]
 #[tauri::command]
 fn export_csv_file(filename: String, content: String) -> Result<String, String> {
-    let mut path = match std::env::var("USERPROFILE") {
-        Ok(user_profile) => std::path::PathBuf::from(user_profile).join("Downloads"),
-        Err(_) => std::env::current_dir().unwrap_or_default(),
-    };
+    let home_dir = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+
+    let mut path = home_dir.join("Downloads");
 
     if !path.exists() {
         let _ = std::fs::create_dir_all(&path);
@@ -602,6 +618,21 @@ fn export_csv_file(filename: String, content: String) -> Result<String, String> 
             .arg("/select,")
             .arg(&path)
             .spawn();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(parent) = path.parent() {
+            let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
+        }
     }
 
     Ok(path.to_string_lossy().to_string())

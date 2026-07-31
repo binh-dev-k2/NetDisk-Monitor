@@ -13,11 +13,21 @@ impl TaskbarMode {
         Ok(())
     }
 
+    #[cfg(not(windows))]
+    pub fn enable(&mut self, _overlay: isize, _width: i32, _height: i32) -> Result<(), String> {
+        Ok(())
+    }
+
     #[cfg(windows)]
     pub fn resize(&mut self, width: i32, height: i32) -> Result<(), String> {
         if let Some(session) = self.session.as_mut() {
             session.resize(width, height)?;
         }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    pub fn resize(&mut self, _width: i32, _height: i32) -> Result<(), String> {
         Ok(())
     }
 

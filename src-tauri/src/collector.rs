@@ -106,7 +106,8 @@ impl SystemCollector {
                     network_down_bps: 0,
                     network_up_bps: 0,
                 };
-                self.process_history.insert(metric.pid.clone(), metric.clone());
+                self.process_history
+                    .insert(metric.pid.clone(), metric.clone());
                 metric
             })
             .collect::<Vec<_>>();
