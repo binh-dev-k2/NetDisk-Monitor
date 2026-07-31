@@ -7,18 +7,18 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:1420",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist-dev"
   },
   "app": {
     "windows": [
       {
         "label": "main",
         "title": "NetDisk Monitor",
-        "width": 600,
-        "height": 240,
+        "width": 980,
+        "height": 640,
         "skipTaskbar": true,
-        "minWidth": 600,
-        "minHeight": 240,
+        "minWidth": 800,
+        "minHeight": 500,
         "transparent": true
       }
     ],

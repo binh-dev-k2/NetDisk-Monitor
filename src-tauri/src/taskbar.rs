@@ -49,7 +49,7 @@ pub fn horizontal_placement(
     monitor_height: i32,
 ) -> (i32, i32, i32) {
     let remaining_width = (task_list_width - monitor_width).max(0);
-    let y = (((bar_height - monitor_height) / 2) + (bar_height / 20).max(1)).max(0);
+    let y = ((bar_height - monitor_height) / 2).max(0);
     (remaining_width, remaining_width + 2, y)
 }
 
@@ -73,7 +73,7 @@ pub fn windows11_placement(
         (notify_x - monitor_width - 8).max(0)
     };
     
-    let y = (((taskbar_height - monitor_height) / 2) + (taskbar_height / 20).max(1)).max(0);
+    let y = ((taskbar_height - monitor_height) / 2).max(0);
     (x, y)
 }
 
@@ -113,7 +113,8 @@ impl TaskbarSession {
             .ok_or_else(|| "Windows taskbar was not found".to_owned())?;
         let overlay_rect = window_rect(overlay)?;
         let taskbar_rect = window_rect(taskbar)?;
-        let overlay_style = unsafe { GetWindowLongPtrW(hwnd(overlay), GWL_STYLE) };
+        let raw_style = unsafe { GetWindowLongPtrW(hwnd(overlay), GWL_STYLE) };
+        let overlay_style = (raw_style & !(WS_CHILD as isize)) | WS_POPUP as isize;
 
         if let Some(start) = find_child(taskbar, "Start") {
             let start_rect = window_rect(start).unwrap_or(taskbar_rect);
@@ -207,9 +208,10 @@ impl TaskbarSession {
     }
 
     fn restore(&mut self) {
+        let popup_style = (self.overlay_style & !(WS_CHILD as isize)) | WS_POPUP as isize;
         unsafe {
             SetParent(hwnd(self.overlay), null_mut());
-            SetWindowLongPtrW(hwnd(self.overlay), GWL_STYLE, self.overlay_style);
+            SetWindowLongPtrW(hwnd(self.overlay), GWL_STYLE, popup_style);
         }
         move_window(
             self.overlay,
@@ -318,14 +320,14 @@ mod tests {
 
     #[test]
     fn horizontal_taskbar_reserves_space_without_overlapping_app_icons() {
-        assert_eq!(horizontal_placement(900, 48, 248, 40), (652, 654, 6));
+        assert_eq!(horizontal_placement(900, 48, 248, 40), (652, 654, 4));
     }
 
     #[test]
     fn windows11_taskbar_places_monitor_before_the_notification_area() {
         assert_eq!(
             windows11_placement(1920, 48, 48, Some(1620), 248, 40),
-            (1364, 6)
+            (1364, 4)
         );
     }
 
@@ -333,7 +335,7 @@ mod tests {
     fn windows11_taskbar_places_monitor_on_left_when_centered() {
         assert_eq!(
             windows11_placement(1920, 48, 800, Some(1620), 248, 40),
-            (180, 6)
+            (180, 4)
         );
     }
 }

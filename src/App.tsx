@@ -13,11 +13,11 @@ const empty: Snapshot = { networkDownBps: 0, networkUpBps: 0, diskReadBps: 0, di
 const emptyHistory: History = { down: [], up: [], read: [], write: [] };
 
 function Sparkline({ values, tone }: { values: number[]; tone: string }) {
-  const points = sparklinePoints(values, 240, 54);
+  const points = sparklinePoints(values, 200, 36);
   if (!points) return null;
-  const fillPoints = `${points} 240,54 0,54`;
+  const fillPoints = `${points} 200,36 0,36`;
   return (
-    <svg className={`sparkline ${tone}`} viewBox="0 0 240 54" preserveAspectRatio="none" aria-hidden="true">
+    <svg className={`sparkline ${tone}`} viewBox="0 0 200 36" preserveAspectRatio="none" aria-hidden="true">
       <defs>
         <linearGradient id={`grad-${tone}`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="currentColor" stopOpacity="0.22" />
@@ -31,7 +31,21 @@ function Sparkline({ values, tone }: { values: number[]; tone: string }) {
 }
 
 function MetricCard({ icon, label, value, tone, history }: { icon: ReactNode; label: string; value: string; tone: string; history: number[] }) {
-  return <section className={`metric-card ${tone}`}><div className="metric-card-title"><span className="metric-icon">{icon}</span><span>{label}</span></div><strong>{value}</strong><Sparkline values={history} tone={tone} /><div className="metric-card-footer"><span>Đỉnh<b>{formatRate(Math.max(...history, 0))}</b></span><span>Hiện tại<b>{value}</b></span></div></section>;
+  return (
+    <section className={`metric-card ${tone}`}>
+      <div className="metric-card-top">
+        <div className="metric-card-title">
+          <span className="metric-icon">{icon}</span>
+          <span>{label}</span>
+        </div>
+        <div className="metric-card-peak">Đỉnh: <b>{formatRate(Math.max(...history, 0))}</b></div>
+      </div>
+      <div className="metric-card-body">
+        <strong>{value}</strong>
+      </div>
+      <Sparkline values={history} tone={tone} />
+    </section>
+  );
 }
 
 export default function App() {
@@ -53,7 +67,6 @@ export default function App() {
     diskWrite: true,
     totalIO: true,
     totalNet: true,
-    connections: true,
   });
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -104,8 +117,33 @@ export default function App() {
     void invoke('reset_session_totals');
     setSessionNetwork({});
   };
-  const toggleOverlayVisible = () => void invoke('set_overlay_visible', { visible: !overlayVisible }).catch(console.error);
-  const toggleTaskbarMode = () => void invoke<boolean>('set_taskbar_mode', { enabled: !taskbarMode }).then(setTaskbarMode).catch(console.error);
+  const [isPendingToggle, setIsPendingToggle] = useState(false);
+
+  const handleDisplayModeChange = async (mode: 'overlay' | 'taskbar' | 'hidden') => {
+    if (isPendingToggle) return;
+    setIsPendingToggle(true);
+    try {
+      if (mode === 'hidden') {
+        await invoke('set_taskbar_mode', { enabled: false });
+        await invoke('set_overlay_visible', { visible: false });
+        setTaskbarMode(false);
+        setOverlayVisible(false);
+      } else if (mode === 'overlay') {
+        await invoke('set_taskbar_mode', { enabled: false });
+        await invoke('set_overlay_visible', { visible: true });
+        setTaskbarMode(false);
+        setOverlayVisible(true);
+      } else if (mode === 'taskbar') {
+        const resMode = await invoke<boolean>('set_taskbar_mode', { enabled: true });
+        setTaskbarMode(resMode);
+        setOverlayVisible(resMode);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsPendingToggle(false);
+    }
+  };
 
   const toggleGroup = (name: string) => {
     setExpandedGroups(prev => ({ ...prev, [name]: !prev[name] }));
@@ -284,7 +322,6 @@ export default function App() {
       { key: 'diskWrite', label: 'Ghi ổ đĩa', width: '0.9fr' },
       { key: 'totalIO', label: 'Tổng I/O', width: '1fr' },
       { key: 'totalNet', label: 'Tổng Mạng', width: '1fr' },
-      { key: 'connections', label: 'Kết nối', width: '0.7fr' },
     ];
     return columnsConfig.filter(col => col.key === 'name' || visibleColumns[col.key as keyof typeof visibleColumns]);
   }, [visibleColumns]);
@@ -295,68 +332,18 @@ export default function App() {
 
   return (
     <div className="dashboard-container">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <Activity size={22} />
-          <span>NetDisk Monitor</span>
-        </div>
-
-        <section className="sidebar-section">
-          <h2>HIỂN THỊ WIDGET</h2>
-          <div className="control-group">
-            <label className="toggle">
-              <input type="checkbox" checked={overlayVisible} onChange={toggleOverlayVisible} />
-              <span>Thanh nổi màn hình</span>
-            </label>
-            <label className="toggle">
-              <input type="checkbox" checked={taskbarMode} onChange={toggleTaskbarMode} />
-              <span>Ghim vào Taskbar</span>
-            </label>
-          </div>
-        </section>
-
-        <section className="sidebar-section">
-          <h2>THÔNG SỐ HIỂN THỊ</h2>
-          <div className="control-group checkboxes">
-            {([
-              { key: 'showNetworkDown', label: 'Tốc độ tải xuống' },
-              { key: 'showNetworkUp', label: 'Tốc độ tải lên' },
-              { key: 'showDiskRead', label: 'Tốc độ đọc đĩa' },
-              { key: 'showDiskWrite', label: 'Tốc độ ghi đĩa' },
-              { key: 'showSessionTotal', label: 'Tổng dung lượng phiên' },
-              { key: 'showSessionDuration', label: 'Thời gian hoạt động' }
-            ] as const).map(option => (
-              <label className="toggle-check" key={option.key}>
-                <input type="checkbox" checked={overlaySettings[option.key]} onChange={event => updateOverlaySettings({ [option.key]: event.target.checked })} />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
-        </section>
-
-        <section className="sidebar-section">
-          <div className="opacity-header">
-            <h2>ĐỘ MỜ WIDGET</h2>
-            <output>{overlaySettings.opacity}%</output>
-          </div>
-          <div className="opacity-slider-container">
-            <input type="range" min="35" max="92" value={overlaySettings.opacity} onChange={event => updateOverlaySettings({ opacity: Number(event.target.value) })} />
-          </div>
-        </section>
-
-        <div className="sidebar-footer">
-          <button className="reset-button" onClick={reset}>
-            <RotateCcw size={15} /> Reset Phiên
-          </button>
-        </div>
-      </aside>
-
       <main className="content-area">
         <header className="content-header">
-          <nav className="tabs" aria-label="Monitor views">
-            <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Tổng quan</button>
-            <button className={tab === 'processes' ? 'active' : ''} onClick={() => setTab('processes')}>Theo Process</button>
-          </nav>
+          <div className="header-left">
+            <div className="app-brand">
+              <Activity size={20} />
+              <span>NetDisk Monitor</span>
+            </div>
+            <nav className="tabs" aria-label="Monitor views">
+              <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Tổng quan</button>
+              <button className={tab === 'processes' ? 'active' : ''} onClick={() => setTab('processes')}>Theo Process</button>
+            </nav>
+          </div>
           <div className="system-status">
             <span><i className="online" /> Đang giám sát</span>
             <span><Wifi size={14} /> Mạng: {snapshot.interfaces.length ? 'Đã kết nối' : 'Đang dò'}</span>
@@ -371,18 +358,81 @@ export default function App() {
               <MetricCard icon={<HardDrive size={18} />} label="Đọc ổ đĩa" value={formatRate(snapshot.diskReadBps)} tone="read" history={history.read} />
               <MetricCard icon={<Database size={18} />} label="Ghi ổ đĩa" value={formatRate(snapshot.diskWriteBps)} tone="write" history={history.write} />
             </section>
+
             <section className="session-band">
               <div>
-                <Network size={19} />
-                <span>Network trong phiên<b>↓ {formatBytes(snapshot.sessionNetworkDown)} <em>↑ {formatBytes(snapshot.sessionNetworkUp)}</em></b></span>
+                <Network size={15} />
+                <span className="session-label">Mạng phiên:</span>
+                <span className="session-values">
+                  <b className="down">↓ {formatBytes(snapshot.sessionNetworkDown)}</b>
+                  <b className="up">↑ {formatBytes(snapshot.sessionNetworkUp)}</b>
+                </span>
               </div>
               <div>
-                <HardDrive size={19} />
-                <span>Disk trong phiên<b>↓ {formatBytes(snapshot.sessionDiskRead)} <em>↑ {formatBytes(snapshot.sessionDiskWrite)}</em></b></span>
+                <HardDrive size={15} />
+                <span className="session-label">Đĩa phiên:</span>
+                <span className="session-values">
+                  <b className="read">↓ {formatBytes(snapshot.sessionDiskRead)}</b>
+                  <b className="write">↑ {formatBytes(snapshot.sessionDiskWrite)}</b>
+                </span>
               </div>
               <div>
-                <Timer size={19} />
-                <span>Thời gian phiên<b>{formatDuration(snapshot.sessionDurationSecs)}</b></span>
+                <Timer size={15} />
+                <span className="session-label">Thời gian:</span>
+                <span className="session-values">
+                  <b className="duration">{formatDuration(snapshot.sessionDurationSecs)}</b>
+                </span>
+              </div>
+            </section>
+
+            <section className="settings-panel">
+              <div className="settings-column main-controls">
+                <h3>CHẾ ĐỘ & ĐỘ MỜ WIDGET</h3>
+                <div className="control-field">
+                  <select
+                    className="widget-mode-select"
+                    value={!overlayVisible ? 'hidden' : taskbarMode ? 'taskbar' : 'overlay'}
+                    disabled={isPendingToggle}
+                    onChange={e => handleDisplayModeChange(e.target.value as 'overlay' | 'taskbar' | 'hidden')}
+                  >
+                    <option value="overlay">Thanh nổi màn hình</option>
+                    <option value="taskbar">Ghim vào Taskbar</option>
+                    <option value="hidden">Ẩn Widget</option>
+                  </select>
+                </div>
+
+                <div className="control-field opacity-field">
+                  <div className="opacity-header">
+                    <span>Độ mờ Widget</span>
+                    <output>{overlaySettings.opacity}%</output>
+                  </div>
+                  <div className="opacity-slider-container">
+                    <input type="range" min="35" max="92" value={overlaySettings.opacity} onChange={event => updateOverlaySettings({ opacity: Number(event.target.value) })} />
+                  </div>
+                </div>
+
+                <button className="reset-button" onClick={reset}>
+                  <RotateCcw size={14} /> Reset Phiên
+                </button>
+              </div>
+
+              <div className="settings-column checkbox-controls">
+                <h3>THÔNG SỐ HIỂN THỊ TRÊN WIDGET</h3>
+                <div className="checkbox-grid">
+                  {([
+                    { key: 'showNetworkDown', label: 'Tốc độ tải xuống' },
+                    { key: 'showNetworkUp', label: 'Tốc độ tải lên' },
+                    { key: 'showDiskRead', label: 'Tốc độ đọc đĩa' },
+                    { key: 'showDiskWrite', label: 'Tốc độ ghi đĩa' },
+                    { key: 'showSessionTotal', label: 'Tổng dung lượng phiên' },
+                    { key: 'showSessionDuration', label: 'Thời gian hoạt động' }
+                  ] as const).map(option => (
+                    <label className="toggle-check" key={option.key}>
+                      <input type="checkbox" checked={overlaySettings[option.key]} onChange={event => updateOverlaySettings({ [option.key]: event.target.checked })} />
+                      <span>{option.label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
             </section>
           </div>
@@ -391,7 +441,7 @@ export default function App() {
             <div className="section-title">
               <div>
                 <h1>Hoạt động theo Process</h1>
-                <span>Network là số kết nối TCP/UDP đang mở theo PID</span>
+                <span>Chi tiết dung lượng mạng và ổ đĩa theo tiến trình</span>
               </div>
               <div className="process-actions">
                 <div className="page-size-selector">
@@ -419,8 +469,7 @@ export default function App() {
                           { key: 'diskRead', label: 'Đọc ổ đĩa' },
                           { key: 'diskWrite', label: 'Ghi ổ đĩa' },
                           { key: 'totalIO', label: 'Tổng I/O' },
-                          { key: 'totalNet', label: 'Tổng Mạng' },
-                          { key: 'connections', label: 'Kết nối' }
+                          { key: 'totalNet', label: 'Tổng Mạng' }
                         ] as const).map(col => (
                           <label className="toggle-check" key={col.key}>
                             <input type="checkbox" checked={visibleColumns[col.key]} onChange={e => setVisibleColumns(prev => ({ ...prev, [col.key]: e.target.checked }))} />
@@ -473,7 +522,6 @@ export default function App() {
                       {visibleColumns.diskWrite && <span className="write">{formatRate(group.diskWriteBps)}</span>}
                       {visibleColumns.totalIO && <span>{formatBytes(group.sessionDiskRead + group.sessionDiskWrite)}</span>}
                       {visibleColumns.totalNet && <span>{formatBytes(group.sessionNetDown + group.sessionNetUp)}</span>}
-                      {visibleColumns.connections && <span className="connection-count"><Wifi size={14} />{group.networkConnections}</span>}
                     </div>
 
                     {/* Child Rows */}
@@ -490,7 +538,6 @@ export default function App() {
                         {visibleColumns.diskWrite && <span className="write">{formatRate(child.diskWriteBps)}</span>}
                         {visibleColumns.totalIO && <span>{formatBytes(child.sessionDiskRead + child.sessionDiskWrite)}</span>}
                         {visibleColumns.totalNet && <span>{formatBytes(child.sessionNetDown + child.sessionNetUp)}</span>}
-                        {visibleColumns.connections && <span className="connection-count"><Wifi size={14} />{child.networkConnections}</span>}
                       </div>
                     ))}
                   </div>

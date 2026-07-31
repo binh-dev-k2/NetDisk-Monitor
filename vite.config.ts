@@ -6,6 +6,7 @@ export default defineConfig({
   clearScreen: false,
   server: { strictPort: true, port: 1420 },
   build: {
+    outDir: 'dist-dev',
     rollupOptions: {
       input: { main: 'index.html', meter: 'meter.html' }
     }

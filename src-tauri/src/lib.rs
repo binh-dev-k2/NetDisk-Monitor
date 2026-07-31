@@ -229,9 +229,16 @@ fn set_overlay_visible(
     app: AppHandle,
 ) -> Result<bool, String> {
     let pinned = state.overlay_pinned.load(Ordering::Acquire);
+    let taskbar_enabled = state
+        .taskbar_mode
+        .lock()
+        .map(|m| m.is_enabled())
+        .unwrap_or(false);
     with_overlay_window(&app, |window| {
         if visible {
-            let _ = window.set_always_on_top(pinned);
+            if !taskbar_enabled {
+                let _ = window.set_always_on_top(pinned);
+            }
             window.show()
         } else {
             window.hide()
@@ -278,6 +285,7 @@ fn set_taskbar_mode(
                 let _ = overlay.set_always_on_top(true);
                 return Err(error);
             }
+            let _ = app.emit("overlay://visibility", true);
         } else {
             mode.disable();
             overlay
