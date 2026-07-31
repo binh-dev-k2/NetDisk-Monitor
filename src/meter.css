@@ -64,7 +64,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; back
 }
 .meter.in-taskbar .meter-item {
   justify-content: center;
-  gap: 0;
+  gap: 4px;
   padding: 0px 4px;
   border-radius: 4px;
   transition: background 0.15s ease;
@@ -72,18 +72,29 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; back
 .meter.in-taskbar .meter-item:hover {
   background: rgba(255, 255, 255, 0.04);
 }
-.meter.in-taskbar .meter-icon { display: none; }
-.meter.in-taskbar .meter-item > span:last-child { display: flex; align-items: baseline; gap: 3px; min-width: 0; }
-.meter.in-taskbar .meter-item small { width: 10px; color: currentColor; font-size: 0; line-height: 1; }
-.meter.in-taskbar .meter-item small::after { font-size: 12px; font-weight: 700; }
-.meter.in-taskbar .down small::after { content: '↓'; }
-.meter.in-taskbar .up small::after { content: '↑'; }
-.meter.in-taskbar .read small::after { content: 'R'; }
-.meter.in-taskbar .write small::after { content: 'W'; }
+.meter.in-taskbar .meter-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 0;
+  background: transparent;
+  flex: 0 0 auto;
+}
+.meter.in-taskbar .meter-icon svg {
+  width: 13px;
+  height: 13px;
+}
+.meter.in-taskbar .meter-item small { display: none; }
+.meter.in-taskbar .meter-item > span:last-child { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .meter.in-taskbar .meter-item b { margin: 0; color: currentColor; font-size: 12px; font-weight: 750; line-height: 1.1; }
 .meter.in-taskbar .down { color: #5bc8ef; }
 .meter.in-taskbar .up { color: #79d762; }
 .meter.in-taskbar .read { color: #f4c04b; }
 .meter.in-taskbar .write { color: #ca94f5; }
-.down { color: #5ac8ef; }.up { color: #79d762; }.read { color: #f4c04b; }.write { color: #ca94f5; }.total { color: #d5e1ea; }.duration { color: #bfcbd6; }
+.meter.in-taskbar .ram { color: #facc15; }
+.meter.in-taskbar .total { color: #d5e1ea; }
+.meter.in-taskbar .duration { color: #bfcbd6; }
+.down { color: #5ac8ef; }.up { color: #79d762; }.read { color: #f4c04b; }.write { color: #ca94f5; }.ram { color: #facc15; }.total { color: #d5e1ea; }.duration { color: #bfcbd6; }
 .meter-empty { display: grid; min-height: 38px; place-items: center; color: #b9c5d0; font-size: 11px; }

@@ -8,6 +8,7 @@ type SessionBandProps = {
 
 export function SessionBand({ snapshot }: SessionBandProps) {
   const totalRamBytes = snapshot.processes.reduce((acc, p) => acc + p.memoryBytes, 0);
+  const sysRamText = snapshot.totalMemoryBytes ? ` / ${formatBytes(snapshot.totalMemoryBytes)}` : '';
 
   return (
     <section className="session-band">
@@ -38,7 +39,7 @@ export function SessionBand({ snapshot }: SessionBandProps) {
         <Cpu size={14} />
         <span className="session-label">Tổng RAM:</span>
         <span className="session-values">
-          <b className="duration">{formatBytes(totalRamBytes)}</b>
+          <b className="duration">{formatBytes(totalRamBytes)}{sysRamText}</b>
         </span>
       </div>
       <div className="session-cell">

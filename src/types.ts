@@ -24,6 +24,7 @@ export type Snapshot = {
   sessionDurationSecs: number;
   processes: ProcessMetric[];
   interfaces: string[];
+  totalMemoryBytes: number;
 };
 
 export type History = Record<'down' | 'up' | 'read' | 'write', number[]>;

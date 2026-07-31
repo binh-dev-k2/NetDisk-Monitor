@@ -79,6 +79,7 @@ export function SettingsPanel({
             { key: 'showNetworkUp', label: 'Tốc độ tải lên' },
             { key: 'showDiskRead', label: 'Tốc độ đọc đĩa' },
             { key: 'showDiskWrite', label: 'Tốc độ ghi đĩa' },
+            { key: 'showRam', label: 'Bộ nhớ RAM' },
             { key: 'showSessionTotal', label: 'Tổng dung lượng phiên' },
             { key: 'showSessionDuration', label: 'Thời gian hoạt động' },
           ] as const).map(option => (

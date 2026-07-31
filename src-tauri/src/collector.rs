@@ -31,6 +31,7 @@ pub struct Collection {
     pub counters: CounterSample,
     pub processes: Vec<ProcessMetric>,
     pub interfaces: Vec<String>,
+    pub total_memory_bytes: u64,
 }
 pub struct SystemCollector {
     system: System,
@@ -42,7 +43,7 @@ pub struct SystemCollector {
 impl SystemCollector {
     pub fn new() -> Self {
         Self {
-            system: System::new(),
+            system: System::new_all(),
             networks: Networks::new_with_refreshed_list(),
             process_session_baselines: HashMap::new(),
             process_observed_at: HashMap::new(),
@@ -55,6 +56,7 @@ impl SystemCollector {
         self.process_history.clear();
     }
     pub fn collect(&mut self) -> Collection {
+        self.system.refresh_memory();
         self.system.refresh_processes(ProcessesToUpdate::All, true);
         self.networks.refresh(true);
         let (network_down, network_up) = self.networks.values().fold((0, 0), |(down, up), data| {
@@ -146,6 +148,7 @@ impl SystemCollector {
             counters: CounterSample::new(network_down, network_up, disk_read, disk_write),
             processes,
             interfaces: self.networks.keys().map(ToString::to_string).collect(),
+            total_memory_bytes: self.system.total_memory(),
         }
     }
 }

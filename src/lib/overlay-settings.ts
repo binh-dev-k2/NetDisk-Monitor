@@ -5,6 +5,7 @@ export type OverlaySettings = {
   showDiskWrite: boolean;
   showSessionTotal: boolean;
   showSessionDuration: boolean;
+  showRam: boolean;
   opacity: number;
 };
 
@@ -15,6 +16,7 @@ export const defaultOverlaySettings: OverlaySettings = {
   showDiskWrite: false,
   showSessionTotal: false,
   showSessionDuration: false,
+  showRam: true,
   opacity: 72,
 };
 

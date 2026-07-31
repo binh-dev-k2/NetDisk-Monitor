@@ -199,29 +199,42 @@ export function useProcessTable(
     gridTemplateColumns: activeColumns.map(c => c.width).join(' '),
   }), [activeColumns]);
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
     if (!sortedGroups.length) return;
-    const headers = ['Process Name', 'PID', 'RAM (Bytes)', 'Uptime (Secs)', 'Download (Bps)', 'Upload (Bps)', 'Disk Read (Bps)', 'Disk Write (Bps)', 'Session I/O (Bytes)', 'Session Network (Bytes)'];
+    const headers = [
+      'Tên tiến trình',
+      'PID',
+      'Số sub-process',
+      'Bộ nhớ RAM (MB)',
+      'Thời gian (Giây)',
+      'Tải xuống (Bps)',
+      'Tải lên (Bps)',
+      'Đọc ổ đĩa (Bps)',
+      'Ghi ổ đĩa (Bps)',
+      'Tổng I/O Đĩa (Bytes)',
+    ];
     const rows = sortedGroups.map(group => [
       `"${group.name.replace(/"/g, '""')}"`,
       `"${group.pid}"`,
-      group.memoryBytes,
+      group.children.length || 1,
+      (group.memoryBytes / (1024 * 1024)).toFixed(2),
       group.uptimeSecs,
       group.networkDownBps,
       group.networkUpBps,
       group.diskReadBps,
       group.diskWriteBps,
       group.sessionDiskRead + group.sessionDiskWrite,
-      group.sessionNetDown + group.sessionNetUp,
     ]);
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `NetDisk_Monitor_Report_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+
+    const csvString = '\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\r\n');
+    const filename = `NetDisk_Monitor_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+
+    try {
+      const savedPath = await invoke<string>('export_csv_file', { filename, content: csvString });
+      alert(`Xuất CSV thành công!\n\nFile đã được lưu tại:\n${savedPath}\n\nThư mục chứa file đã tự động mở trong File Explorer.`);
+    } catch (err: any) {
+      alert(`Không thể xuất CSV: ${err}`);
+    }
   };
 
   const handleKillProcess = async (event: React.MouseEvent, pidStr: string, name: string) => {

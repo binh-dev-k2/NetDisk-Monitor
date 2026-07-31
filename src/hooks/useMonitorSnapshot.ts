@@ -15,6 +15,7 @@ const emptySnapshot: Snapshot = {
   sessionDurationSecs: 0,
   processes: [],
   interfaces: [],
+  totalMemoryBytes: 0,
 };
 
 const emptyHistory: History = { down: [], up: [], read: [], write: [] };
@@ -25,11 +26,8 @@ export function useMonitorSnapshot() {
   const [sessionNetwork, setSessionNetwork] = useState<Record<string, { down: number; up: number }>>({});
 
   useEffect(() => {
-    void invoke<Snapshot>('get_snapshot').then(setSnapshot).catch(console.error);
-
-    const unlistenSnapshot = listen<Snapshot>('snapshot', event => {
+    const updateSnapshot = (current: Snapshot) => {
       startTransition(() => {
-        const current = event.payload;
         setSnapshot(current);
 
         setSessionNetwork(prev => {
@@ -52,10 +50,24 @@ export function useMonitorSnapshot() {
           write: [...prev.write.slice(-29), current.diskWriteBps],
         }));
       });
+    };
+
+    // Initial fetch
+    void invoke<Snapshot>('get_snapshot').then(updateSnapshot).catch(console.error);
+
+    // Listen to real-time events from Tauri backend
+    const unlistenPromise = listen<Snapshot>('metrics://snapshot', event => {
+      updateSnapshot(event.payload);
     });
 
+    // 1s Interval Polling Fallback to guarantee continuous updates
+    const timer = setInterval(() => {
+      void invoke<Snapshot>('get_snapshot').then(updateSnapshot).catch(console.error);
+    }, 1000);
+
     return () => {
-      void unlistenSnapshot.then(f => f());
+      clearInterval(timer);
+      void unlistenPromise.then(f => f());
     };
   }, []);
 

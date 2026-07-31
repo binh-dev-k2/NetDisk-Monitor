@@ -2,22 +2,49 @@ import { StrictMode, useEffect, useMemo, useState, startTransition, type CSSProp
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { ArrowDown, ArrowUp, Clock3, Database, HardDrive, Pin, PinOff, Sigma, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Clock3, Cpu, Database, HardDrive, Pin, PinOff, Sigma, X } from 'lucide-react';
 import { formatBytes, formatDuration, formatRate } from './lib/format';
 import { overlayLayout } from './lib/overlay-layout';
 import { taskbarLayout } from './lib/taskbar-layout';
 import { defaultOverlaySettings, normalizeOverlaySettings, type OverlaySettings } from './lib/overlay-settings';
 import './meter.css';
 
-type Snapshot = { networkDownBps: number; networkUpBps: number; diskReadBps: number; diskWriteBps: number; sessionNetworkDown: number; sessionNetworkUp: number; sessionDiskRead: number; sessionDiskWrite: number; sessionDurationSecs: number };
+type Snapshot = {
+  networkDownBps: number;
+  networkUpBps: number;
+  diskReadBps: number;
+  diskWriteBps: number;
+  sessionNetworkDown: number;
+  sessionNetworkUp: number;
+  sessionDiskRead: number;
+  sessionDiskWrite: number;
+  sessionDurationSecs: number;
+  processes?: Array<{ memoryBytes: number }>;
+  totalMemoryBytes?: number;
+};
+
 type MeterItem = { label: string; value: string; tone: string; icon: ReactElement };
-const empty: Snapshot = { networkDownBps: 0, networkUpBps: 0, diskReadBps: 0, diskWriteBps: 0, sessionNetworkDown: 0, sessionNetworkUp: 0, sessionDiskRead: 0, sessionDiskWrite: 0, sessionDurationSecs: 0 };
+
+const empty: Snapshot = {
+  networkDownBps: 0,
+  networkUpBps: 0,
+  diskReadBps: 0,
+  diskWriteBps: 0,
+  sessionNetworkDown: 0,
+  sessionNetworkUp: 0,
+  sessionDiskRead: 0,
+  sessionDiskWrite: 0,
+  sessionDurationSecs: 0,
+  processes: [],
+  totalMemoryBytes: 0,
+};
 
 function Meter() {
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
   const [settings, setSettings] = useState<OverlaySettings>(defaultOverlaySettings);
   const [pinned, setPinned] = useState(true);
   const [inTaskbar, setInTaskbar] = useState(false);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void invoke<Snapshot>('get_snapshot').then(snap => startTransition(() => setSnapshot(snap))).catch(console.error);
@@ -31,6 +58,7 @@ function Meter() {
     void listen<boolean>('taskbar://mode', event => setInTaskbar(event.payload)).then(listener => { unlisten = listener; });
     return () => unlisten?.();
   }, []);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void invoke<OverlaySettings>('get_overlay_settings').then(value => setSettings(normalizeOverlaySettings(value))).catch(console.error);
@@ -38,14 +66,25 @@ function Meter() {
     return () => unlisten?.();
   }, []);
 
+  const totalRam = useMemo(() => {
+    if (!snapshot.processes) return 0;
+    return snapshot.processes.reduce((acc, p) => acc + p.memoryBytes, 0);
+  }, [snapshot.processes]);
+
+  const ramText = useMemo(() => {
+    return formatBytes(totalRam);
+  }, [totalRam]);
+
   const items = useMemo(() => [
     settings.showNetworkDown && { label: 'Tải xuống', value: formatRate(snapshot.networkDownBps), tone: 'down', icon: <ArrowDown size={15} /> },
     settings.showNetworkUp && { label: 'Tải lên', value: formatRate(snapshot.networkUpBps), tone: 'up', icon: <ArrowUp size={15} /> },
     settings.showDiskRead && { label: 'Đọc ổ đĩa', value: formatRate(snapshot.diskReadBps), tone: 'read', icon: <HardDrive size={15} /> },
     settings.showDiskWrite && { label: 'Ghi ổ đĩa', value: formatRate(snapshot.diskWriteBps), tone: 'write', icon: <Database size={15} /> },
+    settings.showRam && { label: 'Bộ nhớ RAM', value: ramText, tone: 'ram', icon: <Cpu size={15} /> },
     settings.showSessionTotal && { label: 'Tổng phiên', value: formatBytes(snapshot.sessionNetworkDown + snapshot.sessionNetworkUp + snapshot.sessionDiskRead + snapshot.sessionDiskWrite), tone: 'total', icon: <Sigma size={15} /> },
     settings.showSessionDuration && { label: 'Thời gian phiên', value: formatDuration(snapshot.sessionDurationSecs), tone: 'duration', icon: <Clock3 size={15} /> },
-  ].filter((item): item is MeterItem => Boolean(item)), [settings, snapshot]);
+  ].filter((item): item is MeterItem => Boolean(item)), [settings, snapshot, ramText]);
+
   const visibleItems = items;
   const layout = inTaskbar ? taskbarLayout(visibleItems.length) : overlayLayout(visibleItems.length);
 
@@ -59,10 +98,12 @@ function Meter() {
     setPinned(next);
     void invoke('set_overlay_pinned', { pinned: next }).catch(console.error);
   };
+
   const closeOverlay = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     void invoke('set_overlay_visible', { visible: false }).catch(console.error);
   };
+
   const style = {
     '--meter-opacity': String(settings.opacity / 100),
     '--meter-columns': String(layout.columns),

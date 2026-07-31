@@ -32,6 +32,7 @@ struct DashboardSnapshot {
     metrics: MetricsSnapshot,
     processes: Vec<ProcessMetric>,
     interfaces: Vec<String>,
+    total_memory_bytes: u64,
 }
 #[cfg(feature = "desktop")]
 struct MonitorState {
@@ -53,6 +54,7 @@ struct OverlaySettings {
     show_disk_write: bool,
     show_session_total: bool,
     show_session_duration: bool,
+    show_ram: bool,
     opacity: u8,
 }
 
@@ -66,6 +68,7 @@ impl Default for OverlaySettings {
             show_disk_write: false,
             show_session_total: false,
             show_session_duration: false,
+            show_ram: true,
             opacity: 72,
         }
     }
@@ -385,6 +388,7 @@ fn start_collector(app: AppHandle) {
                 metrics,
                 processes,
                 interfaces: collection.interfaces,
+                total_memory_bytes: collection.total_memory_bytes,
             };
             if let Ok(mut current) = state.snapshot.lock() {
                 *current = snapshot.clone();
@@ -504,6 +508,34 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
 }
 
 #[cfg(feature = "desktop")]
+#[tauri::command]
+fn export_csv_file(filename: String, content: String) -> Result<String, String> {
+    let mut path = match std::env::var("USERPROFILE") {
+        Ok(user_profile) => std::path::PathBuf::from(user_profile).join("Downloads"),
+        Err(_) => std::env::current_dir().unwrap_or_default(),
+    };
+
+    if !path.exists() {
+        let _ = std::fs::create_dir_all(&path);
+    }
+
+    path.push(&filename);
+
+    std::fs::write(&path, content.as_bytes())
+        .map_err(|e| format!("Không thể ghi file CSV: {}", e))?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer.exe")
+            .arg("/select,")
+            .arg(&path)
+            .spawn();
+    }
+
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[cfg(feature = "desktop")]
 pub fn run() {
     tauri::Builder::default()
         .manage(MonitorState::default())
@@ -553,7 +585,8 @@ pub fn run() {
             set_taskbar_mode,
             kill_process,
             get_autostart,
-            set_autostart
+            set_autostart,
+            export_csv_file
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
