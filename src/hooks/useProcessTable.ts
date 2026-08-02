@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type MouseEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { buildProcessCsv } from '../lib/csv';
+import { sortProcessGroups, type SortColumn } from '../lib/process-sort';
 import type { ProcessMetric } from '../types';
 
 export function useProcessTable(
@@ -11,7 +13,7 @@ export function useProcessTable(
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-  const [sortColumn, setSortColumn] = useState<string>('name');
+  const [sortColumn, setSortColumn] = useState<SortColumn>('name');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
     name: true,
@@ -25,7 +27,7 @@ export function useProcessTable(
     totalIO: true,
   });
 
-  const handleSort = (key: string) => {
+  const handleSort = (key: SortColumn) => {
     if (sortColumn === key) {
       setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -113,65 +115,7 @@ export function useProcessTable(
   }, [groupedProcesses, searchTerm]);
 
   const sortedGroups = useMemo(() => {
-    if (!sortColumn) return filteredGroups;
-
-    const sorted = [...filteredGroups];
-    sorted.sort((left, right) => {
-      let lVal: any = 0;
-      let rVal: any = 0;
-
-      switch (sortColumn) {
-        case 'name':
-          lVal = left.name.toLowerCase();
-          rVal = right.name.toLowerCase();
-          break;
-        case 'processCount':
-          lVal = left.children.length;
-          rVal = right.children.length;
-          break;
-        case 'memory':
-          lVal = left.memoryBytes;
-          rVal = right.memoryBytes;
-          break;
-        case 'uptime':
-          lVal = left.uptimeSecs;
-          rVal = right.uptimeSecs;
-          break;
-        case 'netDown':
-          lVal = left.networkDownBps;
-          rVal = right.networkDownBps;
-          break;
-        case 'netUp':
-          lVal = left.networkUpBps;
-          rVal = right.networkUpBps;
-          break;
-        case 'diskRead':
-          lVal = left.diskReadBps;
-          rVal = right.diskReadBps;
-          break;
-        case 'diskWrite':
-          lVal = left.diskWriteBps;
-          rVal = right.diskWriteBps;
-          break;
-        case 'totalIO':
-          lVal = left.sessionDiskRead + left.sessionDiskWrite;
-          rVal = right.sessionDiskRead + right.sessionDiskWrite;
-          break;
-        case 'totalNet':
-          lVal = left.sessionNetDown + left.sessionNetUp;
-          rVal = right.sessionNetDown + right.sessionNetUp;
-          break;
-        default:
-          lVal = left.name;
-          rVal = right.name;
-      }
-
-      if (lVal < rVal) return sortDirection === 'asc' ? -1 : 1;
-      if (lVal > rVal) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
-    });
-
-    return sorted;
+    return sortProcessGroups(filteredGroups, sortColumn, sortDirection);
   }, [filteredGroups, sortColumn, sortDirection]);
 
   const totalPages = Math.ceil(sortedGroups.length / pageSize) || 1;
@@ -181,7 +125,7 @@ export function useProcessTable(
   }, [sortedGroups, clampedPage, pageSize]);
 
   const activeColumns = useMemo(() => {
-    const columnsConfig = [
+    const columnsConfig: Array<{ key: SortColumn; label: string; width: string }> = [
       { key: 'name', label: 'Ứng dụng', width: '1.8fr' },
       { key: 'processCount', label: 'Số Process', width: '0.7fr' },
       { key: 'memory', label: 'RAM', width: '0.8fr' },
@@ -192,7 +136,7 @@ export function useProcessTable(
       { key: 'diskWrite', label: 'Ghi ổ đĩa', width: '0.9fr' },
       { key: 'totalIO', label: 'Tổng I/O', width: '1fr' },
     ];
-    return columnsConfig.filter(col => col.key === 'name' || visibleColumns[col.key as keyof typeof visibleColumns]);
+    return columnsConfig.filter(col => col.key === 'name' || visibleColumns[col.key]);
   }, [visibleColumns]);
 
   const gridStyle = useMemo(() => ({
@@ -201,32 +145,7 @@ export function useProcessTable(
 
   const exportCSV = async () => {
     if (!sortedGroups.length) return;
-    const headers = [
-      'Tên tiến trình',
-      'PID',
-      'Số sub-process',
-      'Bộ nhớ RAM (MB)',
-      'Thời gian (Giây)',
-      'Tải xuống (Bps)',
-      'Tải lên (Bps)',
-      'Đọc ổ đĩa (Bps)',
-      'Ghi ổ đĩa (Bps)',
-      'Tổng I/O Đĩa (Bytes)',
-    ];
-    const rows = sortedGroups.map(group => [
-      `"${group.name.replace(/"/g, '""')}"`,
-      `"${group.pid}"`,
-      group.children.length || 1,
-      (group.memoryBytes / (1024 * 1024)).toFixed(2),
-      group.uptimeSecs,
-      group.networkDownBps,
-      group.networkUpBps,
-      group.diskReadBps,
-      group.diskWriteBps,
-      group.sessionDiskRead + group.sessionDiskWrite,
-    ]);
-
-    const csvString = '\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\r\n');
+    const csvString = buildProcessCsv(sortedGroups);
     const filename = `NetDisk_Monitor_Report_${new Date().toISOString().slice(0, 10)}.csv`;
 
     try {
@@ -237,7 +156,7 @@ export function useProcessTable(
     }
   };
 
-  const handleKillProcess = async (event: React.MouseEvent, pidStr: string, name: string) => {
+  const handleKillProcess = async (event: MouseEvent, pidStr: string, name: string) => {
     event.stopPropagation();
     const purePid = pidStr.replace(/[^0-9]/g, '');
     if (!purePid) return;

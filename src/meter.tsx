@@ -1,28 +1,14 @@
-import { StrictMode, useEffect, useMemo, useState, startTransition, type CSSProperties, type MouseEvent, type ReactElement } from 'react';
+import { StrictMode, useEffect, useMemo, useState, type CSSProperties, type MouseEvent, type ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { ArrowDown, ArrowUp, Clock3, Cpu, Database, HardDrive, Pin, PinOff, Sigma, X } from 'lucide-react';
 import { formatBytes, formatDuration, formatRate } from './lib/format';
 import { overlayLayout } from './lib/overlay-layout';
 import { taskbarLayout } from './lib/taskbar-layout';
 import { defaultOverlaySettings, normalizeOverlaySettings, type OverlaySettings } from './lib/overlay-settings';
+import { useTauriStream } from './hooks/useTauriStream';
+import type { Snapshot } from './types';
 import './meter.css';
-
-type Snapshot = {
-  networkDownBps: number;
-  networkUpBps: number;
-  diskReadBps: number;
-  diskWriteBps: number;
-  sessionNetworkDown: number;
-  sessionNetworkUp: number;
-  sessionDiskRead: number;
-  sessionDiskWrite: number;
-  sessionDurationSecs: number;
-  processes?: Array<{ memoryBytes: number }>;
-  totalMemoryBytes?: number;
-  usedMemoryBytes?: number;
-};
 
 type MeterItem = { label: string; value: string; tone: string; icon: ReactElement };
 
@@ -37,39 +23,26 @@ const empty: Snapshot = {
   sessionDiskWrite: 0,
   sessionDurationSecs: 0,
   processes: [],
+  interfaces: [],
   totalMemoryBytes: 0,
   usedMemoryBytes: 0,
 };
 
 function Meter() {
-  const [snapshot, setSnapshot] = useState<Snapshot>(empty);
-  const [settings, setSettings] = useState<OverlaySettings>(defaultOverlaySettings);
+  const [snapshot] = useTauriStream<Snapshot>('get_snapshot', 'metrics://snapshot', {
+    defaultValue: empty,
+    transition: true,
+  });
+  const [settings] = useTauriStream<OverlaySettings>('get_overlay_settings', 'overlay://settings', {
+    defaultValue: defaultOverlaySettings,
+    normalize: normalizeOverlaySettings,
+  });
   const [pinned, setPinned] = useState(true);
-  const [inTaskbar, setInTaskbar] = useState(false);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void invoke<Snapshot>('get_snapshot').then(snap => startTransition(() => setSnapshot(snap))).catch(console.error);
-    void listen<Snapshot>('metrics://snapshot', event => startTransition(() => setSnapshot(event.payload))).then(listener => { unlisten = listener; });
-    return () => unlisten?.();
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void invoke<boolean>('get_taskbar_mode').then(setInTaskbar).catch(console.error);
-    void listen<boolean>('taskbar://mode', event => setInTaskbar(event.payload)).then(listener => { unlisten = listener; });
-    return () => unlisten?.();
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void invoke<OverlaySettings>('get_overlay_settings').then(value => setSettings(normalizeOverlaySettings(value))).catch(console.error);
-    void listen<OverlaySettings>('overlay://settings', event => setSettings(normalizeOverlaySettings(event.payload))).then(listener => { unlisten = listener; });
-    return () => unlisten?.();
-  }, []);
+  const [inTaskbar] = useTauriStream<boolean>('get_taskbar_mode', 'taskbar://mode', {
+    defaultValue: false,
+  });
 
   const totalRam = useMemo(() => {
-    if (!snapshot.processes) return 0;
     return snapshot.processes.reduce((acc, p) => acc + p.memoryBytes, 0);
   }, [snapshot.processes]);
 
@@ -88,8 +61,7 @@ function Meter() {
     settings.showSessionDuration && { label: 'Thời gian phiên', value: formatDuration(snapshot.sessionDurationSecs), tone: 'duration', icon: <Clock3 size={15} /> },
   ].filter((item): item is MeterItem => Boolean(item)), [settings, snapshot, ramText]);
 
-  const visibleItems = items;
-  const layout = inTaskbar ? taskbarLayout(visibleItems.length) : overlayLayout(visibleItems.length);
+  const layout = inTaskbar ? taskbarLayout(items.length) : overlayLayout(items.length);
 
   useEffect(() => {
     void invoke('resize_overlay', { width: layout.width, height: layout.height }).catch(console.error);
@@ -125,7 +97,7 @@ function Meter() {
           </button>
         </div>
       )}
-      {visibleItems.length ? visibleItems.map(item => (
+      {items.length ? items.map(item => (
         <div className={`meter-item ${item.tone}`} key={item.label}>
           <span className="meter-icon">{item.icon}</span>
           <span>

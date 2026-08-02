@@ -1,14 +1,15 @@
+import type { CSSProperties, MouseEvent } from 'react';
 import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import { formatBytes, formatDuration, formatRate } from '../../lib/format';
 import type { ProcessGroup } from '../../types';
 
 type ProcessRowProps = {
   group: ProcessGroup;
-  gridStyle: React.CSSProperties;
+  gridStyle: CSSProperties;
   visibleColumns: Record<string, boolean>;
   isExpanded: boolean;
   toggleGroup: (name: string) => void;
-  handleKillProcess: (event: React.MouseEvent, pidStr: string, name: string) => Promise<void>;
+  handleKillProcess: (event: MouseEvent, pidStr: string, name: string) => Promise<void>;
 };
 
 export function ProcessRow({

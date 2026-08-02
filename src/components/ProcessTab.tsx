@@ -1,32 +1,10 @@
 import { Pagination } from './process/Pagination';
 import { ProcessRow } from './process/ProcessRow';
 import { ProcessTableHeader } from './process/ProcessTableHeader';
+import { useProcessTable } from '../hooks/useProcessTable';
 import type { ProcessGroup } from '../types';
 
-type ProcessTabProps = {
-  searchTerm: string;
-  setSearchTerm: (term: string) => void;
-  pageSize: number;
-  setPageSize: (size: number) => void;
-  currentPage: number;
-  setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
-  showColumnMenu: boolean;
-  setShowColumnMenu: (show: boolean) => void;
-  visibleColumns: Record<string, boolean>;
-  setVisibleColumns: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
-  activeColumns: Array<{ key: string; label: string; width: string }>;
-  gridStyle: React.CSSProperties;
-  sortColumn: string;
-  sortDirection: 'asc' | 'desc';
-  handleSort: (key: string) => void;
-  sortedGroups: ProcessGroup[];
-  paginatedGroups: ProcessGroup[];
-  totalPages: number;
-  clampedPage: number;
-  expandedGroups: Record<string, boolean>;
-  toggleGroup: (name: string) => void;
-  exportCSV: () => void;
-  handleKillProcess: (event: React.MouseEvent, pidStr: string, name: string) => Promise<void>;
+export type ProcessTabProps = ReturnType<typeof useProcessTable> & {
   processCount: number;
 };
 

@@ -1,9 +1,11 @@
+import type { Dispatch, SetStateAction } from 'react';
+
 type PaginationProps = {
   clampedPage: number;
   totalPages: number;
   pageSize: number;
   totalCount: number;
-  setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
+  setCurrentPage: Dispatch<SetStateAction<number>>;
 };
 
 export function Pagination({

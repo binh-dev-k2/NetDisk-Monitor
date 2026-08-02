@@ -1,40 +1,27 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { defaultOverlaySettings, normalizeOverlaySettings, type OverlaySettings } from '../lib/overlay-settings';
+import { useTauriStream } from './useTauriStream';
 
 export function useOverlaySettings() {
-  const [overlaySettings, setOverlaySettings] = useState<OverlaySettings>(defaultOverlaySettings);
-  const [taskbarMode, setTaskbarMode] = useState(false);
-  const [overlayVisible, setOverlayVisible] = useState(true);
+  const [overlaySettings, setOverlaySettings] = useTauriStream<OverlaySettings>(
+    'get_overlay_settings',
+    'overlay://settings',
+    { defaultValue: defaultOverlaySettings, normalize: normalizeOverlaySettings },
+  );
+  const [taskbarMode, setTaskbarMode] = useTauriStream<boolean>('get_taskbar_mode', 'taskbar://mode', {
+    defaultValue: false,
+  });
+  const [overlayVisible, setOverlayVisible] = useTauriStream<boolean>(
+    'get_overlay_visible',
+    'overlay://visibility',
+    { defaultValue: true },
+  );
   const [autostart, setAutostart] = useState(false);
   const [isPendingToggle, setIsPendingToggle] = useState(false);
 
   useEffect(() => {
-    void invoke<OverlaySettings>('get_overlay_settings')
-      .then(value => setOverlaySettings(normalizeOverlaySettings(value)))
-      .catch(console.error);
-    void invoke<boolean>('get_taskbar_mode').then(setTaskbarMode).catch(console.error);
-    void invoke<boolean>('get_overlay_visible').then(setOverlayVisible).catch(console.error);
     void invoke<boolean>('get_autostart').then(setAutostart).catch(console.error);
-
-    const unlistenSettings = listen<OverlaySettings>('overlay://settings-updated', event => {
-      setOverlaySettings(normalizeOverlaySettings(event.payload));
-    });
-
-    const unlistenTaskbar = listen<boolean>('taskbar://mode-updated', event => {
-      setTaskbarMode(event.payload);
-    });
-
-    const unlistenVisibility = listen<boolean>('overlay://visibility-updated', event => {
-      setOverlayVisible(event.payload);
-    });
-
-    return () => {
-      void unlistenSettings.then(f => f());
-      void unlistenTaskbar.then(f => f());
-      void unlistenVisibility.then(f => f());
-    };
   }, []);
 
   const updateOverlaySettings = (change: Partial<OverlaySettings>) => {

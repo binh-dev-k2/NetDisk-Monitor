@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "integrating-tauri-js-frontends": {
+      "source": "dchuk/claude-code-tauri-skills",
+      "sourceType": "github",
+      "skillPath": "tauri/tauri-frontend-js/SKILL.md",
+      "computedHash": "c9464094a7619579792a5194ab75363dde0db5cbaaf8897ec352940e907755de"
+    },
+    "tauri-v2": {
+      "source": "nodnarbnitram/claude-code-extensions",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/tauri-v2/SKILL.md",
+      "computedHash": "7108944eec3bef17686df9ebae9c9bdbee7809744930c8734c979e3c4573eaab"
+    }
+  }
+}

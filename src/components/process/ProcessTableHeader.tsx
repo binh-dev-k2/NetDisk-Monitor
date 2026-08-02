@@ -1,3 +1,4 @@
+import type { Dispatch, SetStateAction } from 'react';
 import { Download, Search, SlidersHorizontal, X } from 'lucide-react';
 
 type ProcessTableHeaderProps = {
@@ -5,11 +6,11 @@ type ProcessTableHeaderProps = {
   setSearchTerm: (term: string) => void;
   pageSize: number;
   setPageSize: (size: number) => void;
-  setCurrentPage: React.Dispatch<React.SetStateAction<number>>;
+  setCurrentPage: Dispatch<SetStateAction<number>>;
   showColumnMenu: boolean;
   setShowColumnMenu: (show: boolean) => void;
   visibleColumns: Record<string, boolean>;
-  setVisibleColumns: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  setVisibleColumns: Dispatch<SetStateAction<Record<string, boolean>>>;
   exportCSV: () => void;
   groupCount: number;
 };

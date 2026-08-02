@@ -68,9 +68,6 @@ impl MetricsEngine {
         self.session_elapsed_millis = 0;
         self.snapshot.session_duration_secs = 0;
     }
-    pub fn snapshot(&self) -> MetricsSnapshot {
-        self.snapshot.clone()
-    }
 }
 
 #[cfg(test)]
@@ -95,6 +92,6 @@ mod tests {
 
         engine.reset_session_totals();
 
-        assert_eq!(engine.snapshot().session_network_down, 0);
+        assert_eq!(engine.snapshot.session_network_down, 0);
     }
 }

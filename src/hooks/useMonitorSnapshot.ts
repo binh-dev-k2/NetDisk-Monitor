@@ -1,4 +1,4 @@
-import { useEffect, useState, startTransition } from 'react';
+import { useEffect, useRef, useState, startTransition } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { History, Snapshot } from '../types';
@@ -25,17 +25,19 @@ export function useMonitorSnapshot() {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
   const [history, setHistory] = useState<History>(emptyHistory);
   const [sessionNetwork, setSessionNetwork] = useState<Record<string, { down: number; up: number }>>({});
+  const lastEventAt = useRef(0);
 
   useEffect(() => {
     const updateSnapshot = (current: Snapshot) => {
+      lastEventAt.current = Date.now();
       startTransition(() => {
         setSnapshot(current);
 
         setSessionNetwork(prev => {
-          const next = { ...prev };
+          const next: Record<string, { down: number; up: number }> = {};
           for (const p of current.processes) {
             const pidKey = `${p.name}-${p.pid}`;
-            const existing = next[pidKey] || { down: 0, up: 0 };
+            const existing = prev[pidKey] || { down: 0, up: 0 };
             next[pidKey] = {
               down: existing.down + p.networkDownBps,
               up: existing.up + p.networkUpBps,
@@ -61,9 +63,11 @@ export function useMonitorSnapshot() {
       updateSnapshot(event.payload);
     });
 
-    // 1s Interval Polling Fallback to guarantee continuous updates
+    // Polling fallback: only runs when no event has arrived recently
     const timer = setInterval(() => {
-      void invoke<Snapshot>('get_snapshot').then(updateSnapshot).catch(console.error);
+      if (Date.now() - lastEventAt.current > 2_500) {
+        void invoke<Snapshot>('get_snapshot').then(updateSnapshot).catch(console.error);
+      }
     }, 1000);
 
     return () => {
