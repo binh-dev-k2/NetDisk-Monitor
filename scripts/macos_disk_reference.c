@@ -60,6 +60,15 @@ done:
         io_name_t class_name = {0};
         (void)IOObjectGetClass(driver, class_name);
         fprintf(stderr, "driver %" PRIu64 " (%s): failed at %s\n", id, class_name, stage);
+        if (parent) {
+            io_name_t parent_class = {0};
+            (void)IOObjectGetClass(parent, parent_class);
+            fprintf(stderr, "provider class: %s\n", parent_class);
+        }
+        if (protocol) {
+            fputs("provider protocol metadata:\n", stderr);
+            CFShow(protocol);
+        }
     }
     if (statistics) CFRelease(statistics);
     if (protocol) CFRelease(protocol);
