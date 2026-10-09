@@ -32,23 +32,35 @@ static int read_driver(io_object_t driver) {
     io_registry_entry_t parent = IO_OBJECT_NULL;
     CFTypeRef protocol = NULL, statistics = NULL;
     int success = 0;
+    const char *stage = "registry identity";
     if (IORegistryEntryGetRegistryEntryID(driver, &id) != KERN_SUCCESS) goto done;
+    stage = "provider parent";
     if (IORegistryEntryGetParentEntry(driver, kIOServicePlane, &parent) != KERN_SUCCESS) goto done;
+    stage = "provider Protocol Characteristics dictionary";
     protocol = IORegistryEntryCreateCFProperty(parent, CFSTR(kIOPropertyProtocolCharacteristicsKey), NULL, 0);
     if (!protocol || CFGetTypeID(protocol) != CFDictionaryGetTypeID()) goto done;
+    stage = "provider Physical Interconnect string";
     CFTypeRef interconnect = CFDictionaryGetValue((CFDictionaryRef)protocol, CFSTR(kIOPropertyPhysicalInterconnectTypeKey));
     if (!interconnect || CFGetTypeID(interconnect) != CFStringGetTypeID()) goto done;
     if (CFEqual(interconnect, CFSTR(kIOPropertyPhysicalInterconnectTypeVirtual))) {
         success = 1;
         goto done;
     }
+    stage = "driver Statistics dictionary";
     statistics = IORegistryEntryCreateCFProperty(driver, CFSTR(kIOBlockStorageDriverStatisticsKey), NULL, 0);
     if (!statistics || CFGetTypeID(statistics) != CFDictionaryGetTypeID()) goto done;
+    stage = "driver Bytes (Read) integer";
     if (!counter((CFDictionaryRef)statistics, CFSTR(kIOBlockStorageDriverStatisticsBytesReadKey), &read)) goto done;
+    stage = "driver Bytes (Write) integer";
     if (!counter((CFDictionaryRef)statistics, CFSTR(kIOBlockStorageDriverStatisticsBytesWrittenKey), &write)) goto done;
     printf("%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n", id, read, write);
     success = 1;
 done:
+    if (!success) {
+        io_name_t class_name = {0};
+        (void)IOObjectGetClass(driver, class_name);
+        fprintf(stderr, "driver %" PRIu64 " (%s): failed at %s\n", id, class_name, stage);
+    }
     if (statistics) CFRelease(statistics);
     if (protocol) CFRelease(protocol);
     if (parent) IOObjectRelease(parent);
@@ -63,18 +75,26 @@ int main(void) {
     (void)number_value;
     io_iterator_t iterator = IO_OBJECT_NULL;
     CFMutableDictionaryRef matching = IOServiceMatching(kIOBlockStorageDriverClass);
-    if (!matching) return 1;
-    if (matching_services(0, matching, &iterator) != KERN_SUCCESS) return 1;
+    if (!matching) { fputs("IOServiceMatching returned null\n", stderr); return 1; }
+    kern_return_t status = matching_services(0, matching, &iterator);
+    if (status != KERN_SUCCESS) {
+        fprintf(stderr, "IOServiceGetMatchingServices: 0x%x\n", status);
+        return 1;
+    }
     if (!iterator) return 0;
     unsigned count = 0;
     int success = 1;
     io_object_t driver;
     while ((driver = IOIteratorNext(iterator))) {
         success = ++count <= 1024 && read_driver(driver);
+        if (count > 1024) fputs("driver scan limit exceeded\n", stderr);
         IOObjectRelease(driver);
         if (!success) break;
     }
-    if (!iterator_valid(iterator)) success = 0;
+    if (!iterator_valid(iterator)) {
+        fputs("IOIteratorIsValid returned false\n", stderr);
+        success = 0;
+    }
     IOObjectRelease(iterator);
     return success ? 0 : 1;
 }

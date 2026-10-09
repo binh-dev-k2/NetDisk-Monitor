@@ -19,8 +19,10 @@ fn reference(executable: &Path) -> Result<Counters, String> {
         .map_err(|e| e.to_string())?;
     if !result.status.success() {
         return Err(format!(
-            "SDK reference reader failed: {}",
-            String::from_utf8_lossy(&result.stderr)
+            "SDK reference reader failed ({}): {}; Rust sample: {:?}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr),
+            macos_disk::sample()
         ));
     }
     let text = String::from_utf8(result.stdout).map_err(|e| e.to_string())?;
