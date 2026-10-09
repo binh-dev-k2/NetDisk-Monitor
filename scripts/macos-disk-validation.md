@@ -57,15 +57,22 @@ No sudo, raw-device access, cache purge, mount changes, or destructive disk acti
 
 ## Limits and Additional Hardware Checks
 
-`.github/workflows/macos-disk-validation.yml` provides a manual `workflow_dispatch`
-job on `macos-latest`. It installs only the existing frontend dependencies in CI,
-runs frontend tests/build, this native SDK/live probe, parent Rust library tests,
-and a desktop-feature Rust build using the existing Cargo lockfile. It has read-only
-repository permissions, does not publish/sign/release, and is not triggered on push.
-The parent must commit/push the intended integrated revision and arrange dispatch;
-this change does not dispatch it. A green standalone probe does not replace parent
-integration checks. Runner architecture is recorded, not assumed; an Intel hardware
-run remains necessary if the hosted runner is Apple Silicon (and vice versa).
+`.github/workflows/macos-disk-validation.yml` runs manually or on pushes to the
+approved `codex/24x7-native-validation-*` branch pattern. Its independent build job
+tests/builds the frontend, tests and lints the Rust parent, and uploads an ARM64
+release executable. It uses the existing lockfiles and read-only repository access;
+it does not sign, notarize, publish a release, or merge master.
+
+The probe matrix distinguishes `abi-only` on `macos-latest` from `live` on
+`macos-26-intel`. ABI-only compiles the SDK reference/probe and runs pure tests;
+its output explicitly says that live counters were NOT validated. The script's
+default remains `live`; no live-test failure is caught and converted to success.
+This split follows actual runner evidence: the ARM virtual provider
+`AppleVirtIODiskStorageDevice` lacks `Physical Interconnect`, so the strict
+physical-counter API reports unavailable. Do not classify it as physical merely
+because its location is Internal. Intel runner SDK comparison and write-counter
+movement passed in run 37995165201. See the dated verification report for details.
+Neither hosted VM proves Apple Silicon physical hardware or desktop GUI behavior.
 
 - No macOS runtime or SDK compilation is claimed from Windows-only test results.
 - Enumeration is capped at 1024 entries (one extra lookahead detects overflow),
@@ -83,8 +90,8 @@ run remains necessary if the hosted runner is Apple Silicon (and vice versa).
   a disk image to confirm no additional physical record, and safely eject/reconnect
   a test external device to confirm disappearance and fresh parent baselines.
   Topology changes during a scan may return Err; retry on the next sampling tick.
-- Leak/port-growth profiling and parent/UI integration remain separate validation
-  tasks. No CI result exists until this script actually runs on macOS.
+- Leak/port-growth profiling and real desktop UI integration remain separate
+  validation tasks; SDK/build evidence does not establish those properties.
 
 ## Official Sources
 

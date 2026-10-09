@@ -15,8 +15,10 @@ network data. Fixed binary retention: 7 days of minute buckets, 366 daily bucket
 - [x] Current-desktop native taskbar parent/bounds/two rows/eight lifecycle cycles.
 - [x] macOS native disk identity implementation and manual/branch CI workflow.
 - [x] Windows real per-PID ETW implementation with rights/loss reporting.
+- [x] Windows embedded-assets release and final macOS Actions build/test/lint.
+- [x] Intel hosted-runner live disk SDK comparison; ARM SDK ABI-only checks.
 - [ ] Full native overlay acceptance and 24-hour complete application soak.
-- [ ] macOS CI result and real desktop menu-bar/overlay acceptance.
+- [ ] Real macOS desktop menu-bar/overlay and physical Apple Silicon disk acceptance.
 - [ ] macOS per-PID network collector (unsupported, shown as unavailable).
 
 ## Design Decisions
@@ -45,6 +47,9 @@ and reports an error. This is not universal taskbar support: left-aligned Start,
 vertical taskbars, insufficient space and secondary taskbars remain unsupported.
 Font measurement controls size; at most two text rows. Overlay opacity does not
 apply to native GDI text. DPI comes from the taskbar HWND, not desktop LOGPIXELSX.
+Unknown or changed native geometry invalidates cached proof. Recovery attempts
+use bounded 250ms-to-5s backoff; healthy UIA refresh remains five seconds. A normal
+desktop missing-Start condition was observed intermittently, not fully explained.
 
 ## Retention And Accuracy
 

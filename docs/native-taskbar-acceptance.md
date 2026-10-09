@@ -144,8 +144,16 @@ backticks, and the SDK's `E_FAIL` constant instead of handwritten HRESULT casts.
 - [x] Fresh attached UIA scan and periodic refresh verified.
 - [x] Invalid bounds hide; measured native detection recovers.
 - [x] Owned module and tests pass Clippy all/pedantic as errors.
-- [x] Whole-crate Cargo sign-off: 120 passed / 6 ignored; strict Clippy passed.
-      Parent live Cargo rerun: 2 passed in 10.66s, identical bounds and DPI.
+- [x] Final whole-crate Cargo sign-off: 123 passed / 6 ignored; strict Clippy passed.
+      Parent live Cargo rerun: 2 passed in 11.19s, identical bounds and DPI.
+- [x] Failure/reflow retry policy: three red-to-green pure regressions; short
+      retry starts at 250 ms and backs off to 5s, with no reuse of invalid proof.
+
+A normal-desktop intermediate rerun failed Start validation and later recovered.
+The underlying intermittent missing-Start condition remains unproven. The new
+retry policy avoids retaining failed proof for a fixed five seconds, but does not
+claim continuous availability of Explorer's UIA tree. Test-only bounded diagnostics
+retain native bounds and all cached Start/offscreen records on future failures.
 
 ## Remaining Desktop States
 

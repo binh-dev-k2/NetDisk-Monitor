@@ -69,6 +69,10 @@ macOS dùng chữ trên menu bar, một hàng theo giới hạn hệ điều hà
 suốt bật feature `macos-private-api` của Tauri; đây không phải bản cam kết phù hợp
 Mac App Store hoặc đã ký/notarize.
 
+Disk macOS chỉ nhận counter của driver có metadata phân loại hợp lệ; thiếu metadata
+thì báo không đo được. CI đã đối chiếu SDK và counter thật trên runner Intel; runner
+ARM ảo thiếu `Physical Interconnect`, nên chưa chứng minh đo disk trên Mac ARM thật.
+
 Kho lịch sử không tăng kích thước, nhưng file CSV do người dùng xuất không thuộc
 giới hạn này. Mất điện/crash có thể mất batch chưa ghi của phút hiện tại. Checkpoint
 phút/ngày dùng redo journal có hai bản checksum; khôi phục after-image thay vì cộng
