@@ -4,9 +4,11 @@ type HeaderProps = {
   tab: 'overview' | 'processes';
   setTab: (tab: 'overview' | 'processes') => void;
   interfaceCount: number;
+  stale: boolean;
+  loading: boolean;
 };
 
-export function Header({ tab, setTab, interfaceCount }: HeaderProps) {
+export function Header({ tab, setTab, interfaceCount, stale, loading }: HeaderProps) {
   return (
     <header className="content-header">
       <div className="header-left">
@@ -31,10 +33,10 @@ export function Header({ tab, setTab, interfaceCount }: HeaderProps) {
       </div>
       <div className="system-status">
         <span>
-          <i className="online" /> Đang giám sát
+          <i className={stale ? 'offline' : 'online'} /> {loading ? 'Đang kết nối' : stale ? 'Dữ liệu cũ' : 'Đang giám sát'}
         </span>
         <span>
-          <Wifi size={14} /> Mạng: {interfaceCount ? 'Đã kết nối' : 'Đang dò'}
+          <Wifi size={14} /> Mạng: {interfaceCount} giao diện
         </span>
       </div>
     </header>

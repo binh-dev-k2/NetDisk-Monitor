@@ -19,8 +19,8 @@ fn linux_autostart_path() -> Result<std::path::PathBuf, String> {
 pub fn get_autostart() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        use std::ptr::null_mut;
         use crate::taskbar::wide;
+        use std::ptr::null_mut;
         use windows_sys::Win32::System::Registry::{
             RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
         };
@@ -30,22 +30,40 @@ pub fn get_autostart() -> Result<bool, String> {
         let mut hkey = null_mut();
 
         unsafe {
-            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) == 0 {
+            let opened = RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                KEY_READ,
+                &raw mut hkey,
+            );
+            if opened == 2 {
+                return Ok(false);
+            }
+            if opened != 0 {
+                return Err(format!("Không thể đọc Registry Windows: {opened}"));
+            }
+            {
                 let mut type_ = 0;
                 let mut size = 0;
                 let status = RegQueryValueExW(
                     hkey,
                     value_name.as_ptr(),
                     null_mut(),
-                    &mut type_,
+                    &raw mut type_,
                     null_mut(),
-                    &mut size,
+                    &raw mut size,
                 );
                 RegCloseKey(hkey);
-                return Ok(status == 0 && type_ == REG_SZ);
+                if status == 2 {
+                    return Ok(false);
+                }
+                if status != 0 {
+                    return Err(format!("Không thể đọc cấu hình khởi động: {status}"));
+                }
+                Ok(type_ == REG_SZ)
             }
         }
-        Ok(false)
     }
     #[cfg(target_os = "macos")]
     {
@@ -61,14 +79,24 @@ pub fn get_autostart() -> Result<bool, String> {
     Ok(false)
 }
 
+#[cfg(target_os = "windows")]
+fn windows_executable_command() -> Result<Vec<u16>, String> {
+    use std::os::windows::ffi::OsStrExt;
+    let path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut text = vec![u16::from(b'"')];
+    text.extend(path.as_os_str().encode_wide());
+    text.extend([u16::from(b'"'), 0]);
+    Ok(text)
+}
+
 pub fn set_autostart(enabled: bool) -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        use std::ptr::null_mut;
         use crate::taskbar::wide;
+        use std::ptr::null_mut;
         use windows_sys::Win32::System::Registry::{
-            RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY_CURRENT_USER,
-            KEY_SET_VALUE, REG_SZ,
+            RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER,
+            KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
         };
 
         let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -76,22 +104,31 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
         let mut hkey = null_mut();
 
         unsafe {
-            if RegOpenKeyExW(
+            let exe_wide = if enabled {
+                Some(windows_executable_command()?)
+            } else {
+                None
+            };
+            if RegCreateKeyExW(
                 HKEY_CURRENT_USER,
                 subkey.as_ptr(),
                 0,
+                null_mut(),
+                REG_OPTION_NON_VOLATILE,
                 KEY_SET_VALUE,
-                &mut hkey,
+                std::ptr::null(),
+                &raw mut hkey,
+                null_mut(),
             ) != 0
             {
                 return Err("Không thể truy cập Registry Windows".to_owned());
             }
 
-            if enabled {
-                let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-                let exe_str = format!("\"{}\"", exe_path.to_string_lossy());
-                let exe_wide = wide(&exe_str);
-                let byte_len = (exe_wide.len() * 2) as u32;
+            if let Some(exe_wide) = exe_wide {
+                let Ok(byte_len) = u32::try_from(exe_wide.len() * 2) else {
+                    RegCloseKey(hkey);
+                    return Err("Đường dẫn chương trình quá dài".to_owned());
+                };
 
                 let res = RegSetValueExW(
                     hkey,
@@ -102,15 +139,11 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
                     byte_len,
                 );
                 RegCloseKey(hkey);
-                if res == 0 {
-                    return Ok(true);
-                }
-                return Err("Không thể ghi Registry khởi động cùng hệ thống".to_owned());
+                registry_set_result(res, true)
             } else {
                 let res = RegDeleteValueW(hkey, value_name.as_ptr());
                 RegCloseKey(hkey);
-                let _ = res;
-                return Ok(false);
+                registry_set_result(res, false)
             }
         }
     }
@@ -121,16 +154,16 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
             let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
             let plist_content = format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>com.netdisk.monitor</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>{}</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n</dict>\n</plist>",
-                exe_path.to_string_lossy()
+                xml_text(&exe_path.to_string_lossy())
             );
             if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::write(&path, plist_content).map_err(|e| e.to_string())?;
             Ok(true)
         } else {
             if path.exists() {
-                let _ = std::fs::remove_file(&path);
+                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
             }
             Ok(false)
         }
@@ -145,13 +178,13 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
                 exe_path.to_string_lossy()
             );
             if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::write(&path, desktop_content).map_err(|e| e.to_string())?;
             Ok(true)
         } else {
             if path.exists() {
-                let _ = std::fs::remove_file(&path);
+                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
             }
             Ok(false)
         }
@@ -160,5 +193,40 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
     {
         let _ = enabled;
         Ok(false)
+    }
+}
+
+#[cfg(any(windows, test))]
+fn registry_set_result(status: u32, enabled: bool) -> Result<bool, String> {
+    if status == 0 || (!enabled && status == 2) {
+        Ok(enabled)
+    } else {
+        Err(format!(
+            "Không thể cập nhật khởi động cùng hệ thống: {status}"
+        ))
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn xml_text(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn registry_failures_are_not_reported_as_disabled() {
+        assert_eq!(super::registry_set_result(0, true), Ok(true));
+        assert_eq!(super::registry_set_result(2, false), Ok(false));
+        assert!(super::registry_set_result(5, false).is_err());
+        assert!(super::registry_set_result(5, true).is_err());
+    }
+    #[test]
+    fn launch_agent_paths_are_xml_escaped() {
+        assert_eq!(super::xml_text("/A&B/<app>"), "/A&amp;B/&lt;app&gt;");
     }
 }

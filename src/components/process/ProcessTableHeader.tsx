@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { Download, Search, SlidersHorizontal, X } from 'lucide-react';
 
 type ProcessTableHeaderProps = {
@@ -28,11 +28,20 @@ export function ProcessTableHeader({
   exportCSV,
   groupCount,
 }: ProcessTableHeaderProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showColumnMenu) return;
+    const dismiss = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) setShowColumnMenu(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setShowColumnMenu(false); };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape); };
+  }, [showColumnMenu, setShowColumnMenu]);
   return (
     <div className="section-title">
       <div>
         <h1>Hoạt động theo Process</h1>
-        <span>Chi tiết dung lượng mạng và ổ đĩa theo tiến trình</span>
+        <span>Phiên quan sát hiện tại</span>
       </div>
       <div className="process-actions">
         <div className="search-box">
@@ -40,6 +49,7 @@ export function ProcessTableHeader({
           <input
             type="text"
             placeholder="Tìm process..."
+            aria-label="Tìm process theo tên hoặc PID"
             value={searchTerm}
             onChange={e => {
               setSearchTerm(e.target.value);
@@ -56,6 +66,7 @@ export function ProcessTableHeader({
         <div className="page-size-selector">
           <span>Dòng/trang:</span>
           <select
+            aria-label="Số nhóm mỗi trang"
             value={pageSize}
             onChange={e => {
               setPageSize(Number(e.target.value));
@@ -73,8 +84,8 @@ export function ProcessTableHeader({
           <Download size={14} /> Xuất CSV
         </button>
 
-        <div className="dropdown-container">
-          <button className="icon-button-text" onClick={() => setShowColumnMenu(!showColumnMenu)}>
+        <div className="dropdown-container" ref={menuRef}>
+          <button className="icon-button-text" aria-expanded={showColumnMenu} onClick={() => setShowColumnMenu(!showColumnMenu)}>
             <SlidersHorizontal size={14} /> Cột hiển thị
           </button>
           {showColumnMenu && (
@@ -82,14 +93,15 @@ export function ProcessTableHeader({
               <h3>HIỂN THỊ CỘT</h3>
               <div className="column-checkboxes">
                 {([
-                  { key: 'processCount', label: 'Số lượng Process' },
+                  { key: 'processCount', label: 'Process đang chạy' },
                   { key: 'memory', label: 'Bộ nhớ RAM' },
-                  { key: 'uptime', label: 'Đã theo dõi' },
+                  { key: 'uptime', label: 'Theo dõi tối đa trong nhóm' },
                   { key: 'netDown', label: 'Tải xuống' },
                   { key: 'netUp', label: 'Tải lên' },
-                  { key: 'diskRead', label: 'Đọc ổ đĩa' },
-                  { key: 'diskWrite', label: 'Ghi ổ đĩa' },
-                  { key: 'totalIO', label: 'Tổng I/O' },
+                  { key: 'diskRead', label: 'I/O đọc' },
+                  { key: 'diskWrite', label: 'I/O ghi' },
+                  { key: 'totalIO', label: 'I/O phiên' },
+                  { key: 'totalNet', label: 'Mạng phiên' },
                 ] as const).map(col => (
                   <label className="toggle-check" key={col.key}>
                     <input

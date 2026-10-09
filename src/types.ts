@@ -1,5 +1,8 @@
 export type ProcessMetric = {
   pid: string;
+  identity: string;
+  startTime: number;
+  active: boolean;
   name: string;
   memoryBytes: number;
   diskReadBps: number;
@@ -8,11 +11,18 @@ export type ProcessMetric = {
   sessionDiskWrite: number;
   uptimeSecs: number;
   networkConnections: number;
-  networkDownBps: number;
-  networkUpBps: number;
+  networkAvailable: boolean;
+  networkDownBps: number | null;
+  networkUpBps: number | null;
+  sessionNetworkDown?: number | null;
+  sessionNetworkUp?: number | null;
 };
 
-export type Snapshot = {
+export type SystemSnapshot = {
+  sequence: number;
+  storageError?: string | null;
+  taskbarError?: string | null;
+  diskAvailable: boolean;
   networkDownBps: number;
   networkUpBps: number;
   diskReadBps: number;
@@ -22,44 +32,18 @@ export type Snapshot = {
   sessionDiskRead: number;
   sessionDiskWrite: number;
   sessionDurationSecs: number;
-  processes: ProcessMetric[];
   interfaces: string[];
   totalMemoryBytes: number;
   usedMemoryBytes: number;
 };
 
+export type ProcessSnapshot = { processSequence: number; processes: ProcessMetric[]; processNetworkError?: string | null };
+export type Snapshot = SystemSnapshot & ProcessSnapshot;
 export type History = Record<'down' | 'up' | 'read' | 'write', number[]>;
 
-export type ProcessGroup = {
+export type ProcessGroup = Omit<ProcessMetric, 'identity'> & {
   id: string;
-  pid: string;
-  name: string;
-  memoryBytes: number;
-  diskReadBps: number;
-  diskWriteBps: number;
-  sessionDiskRead: number;
-  sessionDiskWrite: number;
-  uptimeSecs: number;
-  networkConnections: number;
-  networkDownBps: number;
-  networkUpBps: number;
-  sessionNetDown: number;
-  sessionNetUp: number;
+  activeCount: number;
   isGroup: boolean;
-  children: Array<{
-    id: string;
-    pid: string;
-    name: string;
-    memoryBytes: number;
-    diskReadBps: number;
-    diskWriteBps: number;
-    sessionDiskRead: number;
-    sessionDiskWrite: number;
-    uptimeSecs: number;
-    networkConnections: number;
-    networkDownBps: number;
-    networkUpBps: number;
-    sessionNetDown: number;
-    sessionNetUp: number;
-  }>;
+  children: Array<ProcessMetric & { id: string }>;
 };

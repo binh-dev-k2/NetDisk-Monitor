@@ -1,94 +1,38 @@
+import { memo } from 'react';
 import { Pagination } from './process/Pagination';
 import { ProcessRow } from './process/ProcessRow';
 import { ProcessTableHeader } from './process/ProcessTableHeader';
 import { useProcessTable } from '../hooks/useProcessTable';
-import type { ProcessGroup } from '../types';
+import type { ProcessMetric } from '../types';
 
-export type ProcessTabProps = ReturnType<typeof useProcessTable> & {
-  processCount: number;
-};
-
-export function ProcessTab({
-  searchTerm,
-  setSearchTerm,
-  pageSize,
-  setPageSize,
-  setCurrentPage,
-  showColumnMenu,
-  setShowColumnMenu,
-  visibleColumns,
-  setVisibleColumns,
-  activeColumns,
-  gridStyle,
-  sortColumn,
-  sortDirection,
-  handleSort,
-  sortedGroups,
-  paginatedGroups,
-  totalPages,
-  clampedPage,
-  expandedGroups,
-  toggleGroup,
-  exportCSV,
-  handleKillProcess,
-  processCount,
-}: ProcessTabProps) {
-  return (
-    <section className="processes">
-      <ProcessTableHeader
-        searchTerm={searchTerm}
-        setSearchTerm={setSearchTerm}
-        pageSize={pageSize}
-        setPageSize={setPageSize}
-        setCurrentPage={setCurrentPage}
-        showColumnMenu={showColumnMenu}
-        setShowColumnMenu={setShowColumnMenu}
-        visibleColumns={visibleColumns}
-        setVisibleColumns={setVisibleColumns}
-        exportCSV={exportCSV}
-        groupCount={sortedGroups.length}
-      />
-
-      <div className="process-table">
-        <div className="process-row headings" style={gridStyle}>
-          {activeColumns.map(col => (
-            <span
-              key={col.key}
-              className={`sortable-header ${sortColumn === col.key ? 'active' : ''}`}
-              onClick={() => handleSort(col.key)}
-            >
-              {col.label}
-              {sortColumn === col.key && (
-                <span className="sort-arrow">{sortDirection === 'asc' ? ' ↑' : ' ↓'}</span>
-              )}
-            </span>
-          ))}
+export const ProcessTab = memo(function ProcessTab({ processes, hidden, loading, stale }: {
+  processes: ProcessMetric[]; hidden: boolean; loading: boolean; stale: boolean;
+}) {
+  const table = useProcessTable(processes);
+  return <section className="processes" hidden={hidden}>
+    <ProcessTableHeader {...table} groupCount={table.sortedGroups.length} />
+    <div className="process-retention" role="status">
+      Phiên hiện tại · Giữ tối đa 512 process đã kết thúc; khi đầy, loại bản ghi được giữ lâu nhất. Không lưu process qua lần khởi động.
+    </div>
+    {table.actionError && <div className="diagnostics" role="alert">{table.actionError}</div>}
+    {table.exportNotice && <div className="notice" role="status">{table.exportNotice}</div>}
+    {stale && <div className="diagnostics" role="status">Dữ liệu process chưa được cập nhật.</div>}
+    <div className="process-table" tabIndex={0} aria-label="Danh sách process">
+      <div className="process-table-inner" style={{ minWidth: table.activeColumns.length * 117 + 100 }}>
+        <div className="process-row headings" style={table.gridStyle}>
+          {table.activeColumns.map(column => <button type="button" key={column.key}
+            className={`sortable-header${table.sortColumn === column.key ? ' active' : ''}`}
+            onClick={() => table.handleSort(column.key)} aria-label={`${column.label}: sắp xếp`}>
+            {column.label}{table.sortColumn === column.key && <span className="sort-arrow">{table.sortDirection === 'asc' ? ' ↑' : ' ↓'}</span>}
+          </button>)}
         </div>
-
-        {processCount ? (
-          paginatedGroups.map(group => (
-            <ProcessRow
-              key={group.id}
-              group={group}
-              gridStyle={gridStyle}
-              visibleColumns={visibleColumns}
-              isExpanded={expandedGroups[group.name]}
-              toggleGroup={toggleGroup}
-              handleKillProcess={handleKillProcess}
-            />
-          ))
-        ) : (
-          <div className="empty">Đang thu thập dữ liệu process...</div>
-        )}
+        {table.paginatedGroups.map(group => <ProcessRow key={group.id} group={group} gridStyle={table.gridStyle}
+          visibleColumns={table.visibleColumns} isExpanded={table.expandedGroups[group.name]}
+          toggleGroup={table.toggleGroup} handleKillProcess={table.handleKillProcess} pendingKill={table.pendingKill} />)}
       </div>
-
-      <Pagination
-        clampedPage={clampedPage}
-        totalPages={totalPages}
-        pageSize={pageSize}
-        totalCount={sortedGroups.length}
-        setCurrentPage={setCurrentPage}
-      />
-    </section>
-  );
-}
+      {!table.paginatedGroups.length && <div className="empty">{loading ? 'Đang thu thập dữ liệu process...' : processes.length ? 'Không có process phù hợp.' : 'Không có dữ liệu process.'}</div>}
+    </div>
+    <Pagination clampedPage={table.clampedPage} totalPages={table.totalPages} pageSize={table.pageSize}
+      totalCount={table.sortedGroups.length} setCurrentPage={table.setCurrentPage} />
+  </section>;
+});

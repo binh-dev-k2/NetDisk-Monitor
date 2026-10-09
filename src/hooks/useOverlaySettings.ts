@@ -1,80 +1,88 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { defaultOverlaySettings, normalizeOverlaySettings, type OverlaySettings } from '../lib/overlay-settings';
+import { errorMessage } from '../lib/tauri-stream';
 import { useTauriStream } from './useTauriStream';
 
 export function useOverlaySettings() {
-  const [overlaySettings, setOverlaySettings] = useTauriStream<OverlaySettings>(
-    'get_overlay_settings',
-    'overlay://settings',
-    { defaultValue: defaultOverlaySettings, normalize: normalizeOverlaySettings },
-  );
-  const [taskbarMode, setTaskbarMode] = useTauriStream<boolean>('get_taskbar_mode', 'taskbar://mode', {
-    defaultValue: false,
+  const [settings, setSettings, settingsStatus] = useTauriStream<OverlaySettings>('get_overlay_settings', 'overlay://settings', {
+    defaultValue: defaultOverlaySettings, normalize: normalizeOverlaySettings,
   });
-  const [overlayVisible, setOverlayVisible] = useTauriStream<boolean>(
-    'get_overlay_visible',
-    'overlay://visibility',
-    { defaultValue: true },
-  );
+  const [taskbarMode, setTaskbarMode, modeStatus] = useTauriStream<boolean>('get_taskbar_mode', 'taskbar://mode', { defaultValue: false });
+  const [overlayVisible, setOverlayVisible, visibilityStatus] = useTauriStream<boolean>('get_overlay_visible', 'overlay://visibility', { defaultValue: true });
+  const [draft, setDraft] = useState<OverlaySettings | null>(null);
+  const draftRef = useRef<OverlaySettings | null>(null);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const settingsPending = useRef(false);
+  const togglePending = useRef(false);
+  const autostartPending = useRef(false);
   const [autostart, setAutostart] = useState(false);
   const [isPendingToggle, setIsPendingToggle] = useState(false);
-
+  const [isPendingAutostart, setIsPendingAutostart] = useState(false);
+  const [commandError, setCommandError] = useState<string | null>(null);
   useEffect(() => {
-    void invoke<boolean>('get_autostart').then(setAutostart).catch(console.error);
+    let disposed = false;
+    void invoke<boolean>('get_autostart').then(value => { if (!disposed) setAutostart(value); })
+      .catch(error => { if (!disposed) setCommandError(errorMessage(error)); });
+    return () => { disposed = true; };
   }, []);
-
   const updateOverlaySettings = (change: Partial<OverlaySettings>) => {
-    const next = normalizeOverlaySettings({ ...overlaySettings, ...change });
-    setOverlaySettings(next);
-    void invoke<OverlaySettings>('update_overlay_settings', { settings: next })
-      .then(value => setOverlaySettings(normalizeOverlaySettings(value)))
-      .catch(console.error);
+    const next = normalizeOverlaySettings({ ...(draftRef.current ?? settingsRef.current), ...change });
+    draftRef.current = next;
+    setDraft(next);
+    if (settingsPending.current) return;
+    settingsPending.current = true;
+    setCommandError(null);
+    void (async () => {
+      try {
+        while (draftRef.current) {
+          const desired = draftRef.current;
+          const value = normalizeOverlaySettings(await invoke<OverlaySettings>('update_overlay_settings', { settings: desired }));
+          setSettings(value);
+          if (draftRef.current === desired) { draftRef.current = null; setDraft(null); }
+        }
+      } catch (error) {
+        draftRef.current = null;
+        setDraft(null);
+        setCommandError(errorMessage(error));
+      } finally { settingsPending.current = false; }
+    })();
   };
-
   const handleDisplayModeChange = async (mode: 'overlay' | 'taskbar' | 'hidden') => {
-    if (isPendingToggle) return;
+    if (togglePending.current) return;
+    togglePending.current = true;
     setIsPendingToggle(true);
+    setCommandError(null);
     try {
-      if (mode === 'hidden') {
+      if (mode === 'taskbar') {
+        const enabled = await invoke<boolean>('set_taskbar_mode', { enabled: true });
+        setTaskbarMode(enabled);
+        setOverlayVisible(await invoke<boolean>('get_overlay_visible'));
+      } else {
         await invoke('set_taskbar_mode', { enabled: false });
-        await invoke('set_overlay_visible', { visible: false });
         setTaskbarMode(false);
-        setOverlayVisible(false);
-      } else if (mode === 'overlay') {
-        await invoke('set_taskbar_mode', { enabled: false });
-        await invoke('set_overlay_visible', { visible: true });
-        setTaskbarMode(false);
-        setOverlayVisible(true);
-      } else if (mode === 'taskbar') {
-        const resMode = await invoke<boolean>('set_taskbar_mode', { enabled: true });
-        setTaskbarMode(resMode);
-        setOverlayVisible(resMode);
+        setOverlayVisible(await invoke<boolean>('set_overlay_visible', { visible: mode === 'overlay' }));
       }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsPendingToggle(false);
-    }
+    } catch (error) {
+      setCommandError(errorMessage(error));
+      try {
+        setTaskbarMode(await invoke<boolean>('get_taskbar_mode'));
+        setOverlayVisible(await invoke<boolean>('get_overlay_visible'));
+      } catch { /* Preserve the original actionable error. */ }
+    } finally { togglePending.current = false; setIsPendingToggle(false); }
   };
-
   const toggleAutostart = async (enabled: boolean) => {
-    try {
-      const res = await invoke<boolean>('set_autostart', { enabled });
-      setAutostart(res);
-    } catch (err: any) {
-      alert(err || 'Không thể thay đổi cài đặt khởi động cùng Windows');
-    }
+    if (autostartPending.current) return;
+    autostartPending.current = true;
+    setIsPendingAutostart(true);
+    setCommandError(null);
+    try { setAutostart(await invoke<boolean>('set_autostart', { enabled })); }
+    catch (error) { setCommandError(errorMessage(error)); }
+    finally { autostartPending.current = false; setIsPendingAutostart(false); }
   };
-
-  return {
-    overlaySettings,
-    taskbarMode,
-    overlayVisible,
-    autostart,
-    isPendingToggle,
-    updateOverlaySettings,
-    handleDisplayModeChange,
-    toggleAutostart,
-  };
+  return { overlaySettings: draft ?? settings, taskbarMode, overlayVisible, autostart,
+    isPendingToggle, isPendingAutostart,
+    error: commandError ?? settingsStatus.error ?? modeStatus.error ?? visibilityStatus.error,
+    updateOverlaySettings, handleDisplayModeChange, toggleAutostart };
 }

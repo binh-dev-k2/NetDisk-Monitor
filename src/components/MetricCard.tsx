@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { sparklinePoints } from '../lib/sparkline';
+import { formatRate } from '../lib/format';
 
 function Sparkline({ values, tone }: { values: number[]; tone: string }) {
   const points = sparklinePoints(values, 200, 36);
@@ -37,7 +38,7 @@ export function MetricCard({ icon, label, value, tone, history }: MetricCardProp
           <span>{label}</span>
         </div>
         <span className="metric-card-peak">
-          Peak: <b>{peak ? `${(peak / 1024 / 1024).toFixed(1)}M` : '0'}</b>
+          Peak: <b>{formatRate(peak)}</b>
         </span>
       </div>
       <div className="metric-card-body">

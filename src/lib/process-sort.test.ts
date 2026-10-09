@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { sortProcessGroups } from './process-sort';
 import type { ProcessGroup } from '../types';
+import { groupProcesses } from './process-model';
 
 function group(name: string, memoryBytes: number, diskReadBps: number): ProcessGroup {
-  return {
-    id: `group-${name}`,
-    pid: `PID 1`,
+  return groupProcesses([{
+    pid: '1', identity: '1:10', startTime: 10, active: true, networkAvailable: false,
     name,
     memoryBytes,
     diskReadBps,
@@ -16,11 +16,7 @@ function group(name: string, memoryBytes: number, diskReadBps: number): ProcessG
     networkConnections: 0,
     networkDownBps: 0,
     networkUpBps: 0,
-    sessionNetDown: 0,
-    sessionNetUp: 0,
-    isGroup: true,
-    children: [],
-  };
+  }])[0];
 }
 
 describe('sortProcessGroups', () => {
@@ -49,5 +45,14 @@ describe('sortProcessGroups', () => {
     sortProcessGroups(input, 'name', 'desc');
 
     expect(input).toEqual(snapshot);
+  });
+  it('sorts measured session-network totals separately from unknown totals and current rates', () => {
+    const groups = [
+      { ...group('unknown', 0, 0), sessionNetworkDown: null, sessionNetworkUp: 10000 },
+      { ...group('zero', 0, 0), sessionNetworkDown: 0, sessionNetworkUp: 0 },
+      { ...group('retired', 0, 0), active: false, sessionNetworkDown: 100, sessionNetworkUp: 200 },
+    ];
+    expect(sortProcessGroups(groups, 'totalNet', 'asc').map(item => item.name)).toEqual(['unknown', 'zero', 'retired']);
+    expect(sortProcessGroups(groups, 'totalNet', 'desc').map(item => item.name)).toEqual(['retired', 'zero', 'unknown']);
   });
 });

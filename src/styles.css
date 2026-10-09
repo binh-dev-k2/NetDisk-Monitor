@@ -454,6 +454,7 @@ button, input, select {
 
 .toggle-check input {
   appearance: none;
+  flex-shrink: 0;
   width: 14px;
   height: 14px;
   border: 1px solid var(--border-color);
@@ -981,4 +982,59 @@ button, input, select {
   .content-area {
     padding: 10px;
   }
+}
+
+[hidden] { display: none !important; }
+.history-section { min-width: 0; padding: 16px 0; border-top: 1px solid var(--border-color); }
+.history-toolbar, .history-pagination { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.history-toolbar { margin-bottom: 10px; }
+.history-toolbar h3 { font-size: 13px; margin: 0 auto 0 0; }
+.history-toolbar select { min-width: 0; max-width: 100%; padding: 6px; background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; }
+.history-toolbar button, .history-pagination button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-color); border-radius: 4px; cursor: pointer; }
+.history-toolbar button:disabled, .history-pagination button:disabled { opacity: .4; cursor: default; }
+.history-scroll { max-height: 300px; overflow: auto; }
+.history-scroll table { width: 100%; min-width: 600px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.history-scroll th, .history-scroll td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+.history-scroll th:first-child, .history-scroll td:first-child { text-align: left; }
+.history-scroll th { position: sticky; top: 0; background: var(--bg-card); color: var(--text-secondary); font-weight: 500; }
+.history-pagination { justify-content: flex-end; margin-top: 8px; font-size: 11px; color: var(--text-secondary); }
+.history-pagination > span:first-child { margin-right: auto; }
+.content-area { min-width: 0; min-height: 0; overflow-x: hidden; }
+.diagnostics, .notice { padding: 8px 12px; border-left: 3px solid #f87171; background: #2b151a; color: #fecaca; overflow-wrap: anywhere; }
+.notice { border-color: #4ade80; background: #11271c; color: #bbf7d0; }
+.process-retention { padding: 8px 16px; color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+.offline { width: 6px; height: 6px; border-radius: 50%; background: #f87171; }
+.processes { min-width: 0; min-height: 0; flex-shrink: 0; overflow: visible; }
+.process-table { width: 100%; max-width: 100%; overflow-x: auto; }
+.process-table-inner { width: 100%; }
+.process-row { min-width: 0; }
+.process-row > span { min-width: 0; }
+.sortable-header { color: inherit; font: inherit; text-transform: inherit; padding: 0; border: 0; background: transparent; text-align: left; }
+.expand-indicator { padding: 0; border: 0; background: transparent; cursor: pointer; }
+.kill-process-btn { opacity: 1; }
+.process-row.inactive { color: var(--text-muted); }
+button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+.session-band { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.session-cell { min-width: 0; flex-wrap: wrap; white-space: normal; }
+.session-values { flex-wrap: wrap; white-space: normal; }
+.metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.metric-card { min-width: 0; }
+.metric-card-top { flex-wrap: wrap; gap: 4px; }
+.metric-card-body strong { overflow-wrap: anywhere; }
+.section-title { flex-wrap: wrap; gap: 12px; }
+.process-actions { flex-wrap: wrap; gap: 8px; }
+@media (max-width: 960px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 768px) {
+  .session-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .header-left { flex-wrap: wrap; }
+  .content-header .tabs button { padding: 6px 10px; }
+  .system-status { flex-wrap: wrap; }
+}
+@media (max-width: 480px) {
+  .column-menu-dropdown { left: 0; right: auto; max-width: calc(100vw - 52px); }
+  .session-band { grid-template-columns: minmax(0, 1fr); }
+  .session-cell { border-right: 0; border-bottom: 1px solid var(--border-color); }
+  .session-cell:last-child { border-bottom: 0; }
+  .checkbox-grid { grid-template-columns: minmax(0, 1fr); }
+  .pagination-buttons { flex-wrap: wrap; }
 }

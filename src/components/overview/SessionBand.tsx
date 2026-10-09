@@ -1,13 +1,14 @@
 import { Cpu, HardDrive, Layers, Network, Timer, Wifi } from 'lucide-react';
 import { formatBytes, formatDuration } from '../../lib/format';
-import type { Snapshot } from '../../types';
+import type { SystemSnapshot } from '../../types';
 
 type SessionBandProps = {
-  snapshot: Snapshot;
+  snapshot: SystemSnapshot;
+  activeProcessCount: number;
 };
 
-export function SessionBand({ snapshot }: SessionBandProps) {
-  const usedRam = snapshot.usedMemoryBytes || snapshot.processes.reduce((acc, p) => acc + p.memoryBytes, 0);
+export function SessionBand({ snapshot, activeProcessCount }: SessionBandProps) {
+  const usedRam = snapshot.usedMemoryBytes;
   const sysRamText = snapshot.totalMemoryBytes ? ` / ${formatBytes(snapshot.totalMemoryBytes)}` : '';
 
   return (
@@ -22,17 +23,17 @@ export function SessionBand({ snapshot }: SessionBandProps) {
       </div>
       <div className="session-cell">
         <HardDrive size={14} />
-        <span className="session-label">Đĩa phiên:</span>
+        <span className="session-label">I/O phiên:</span>
         <span className="session-values">
-          <b className="read">↓ {formatBytes(snapshot.sessionDiskRead)}</b>
-          <b className="write">↑ {formatBytes(snapshot.sessionDiskWrite)}</b>
+          <b className="read">↓ {snapshot.diskAvailable ? formatBytes(snapshot.sessionDiskRead) : 'N/A'}</b>
+          <b className="write">↑ {snapshot.diskAvailable ? formatBytes(snapshot.sessionDiskWrite) : 'N/A'}</b>
         </span>
       </div>
       <div className="session-cell">
         <Layers size={14} />
         <span className="session-label">Tiến trình:</span>
         <span className="session-values">
-          <b className="duration">{snapshot.processes.length} đang chạy</b>
+          <b className="duration">{activeProcessCount} đang chạy</b>
         </span>
       </div>
       <div className="session-cell">
@@ -53,7 +54,7 @@ export function SessionBand({ snapshot }: SessionBandProps) {
         <Wifi size={14} />
         <span className="session-label">Card mạng:</span>
         <span className="session-values">
-          <b className="duration">{snapshot.interfaces.length ? 'Hoạt động' : 'Tự động'}</b>
+          <b className="duration">{snapshot.interfaces.length} giao diện</b>
         </span>
       </div>
     </section>
