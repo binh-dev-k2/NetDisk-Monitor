@@ -164,7 +164,10 @@ pub(crate) fn wide(value: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 mod native {
-    use super::{native_placement, rect_contains, uia_host_is_container, uia_left_exclusion, wide};
+    use super::{
+        native_placement, rect_contains, uia_host_is_container, uia_left_exclusion, wide,
+        BoundaryRetry,
+    };
     use std::{
         ptr::{null, null_mut},
         sync::{
@@ -480,17 +483,7 @@ mod native {
                         ));
                     }
                     let scan_root = self.0.ElementFromHandle(UiaHwnd(host as isize))?;
-                    let request = self.0.CreateCacheRequest()?;
-                    request.SetTreeScope(TreeScope_Element)?;
-                    for property in [
-                        UIA_AutomationIdPropertyId,
-                        UIA_BoundingRectanglePropertyId,
-                        UIA_ClassNamePropertyId,
-                        UIA_IsOffscreenPropertyId,
-                        UIA_NativeWindowHandlePropertyId,
-                    ] {
-                        request.AddProperty(property)?;
-                    }
+                    let request = self.boundary_cache()?;
                     let condition = self.0.CreateTrueCondition()?;
                     let items =
                         scan_root.FindAllBuildCache(TreeScope_Descendants, &condition, &request)?;
@@ -503,6 +496,8 @@ mod native {
                     }
                     let mut rects = visible_native_bounds(parent, own, bar)
                         .map_err(|error| windows::core::Error::new(E_FAIL, error))?;
+                    #[cfg(test)]
+                    let mut diagnostics = BoundaryDiagnostics::new(&rects);
                     let mut has_start = false;
                     let start_left = start.left - bar.left;
                     for index in 0..count {
@@ -512,6 +507,8 @@ mod native {
                         if class == CLASS || (handle != 0 && handle == own as isize) {
                             continue;
                         }
+                        #[cfg(test)]
+                        diagnostics.record(index, &element, bar)?;
                         if element.CachedIsOffscreen()?.as_bool() {
                             continue;
                         }
@@ -531,13 +528,97 @@ mod native {
                         }
                         rects.push(relative);
                     }
-                    uia_left_exclusion(bar.right - bar.left, bar.bottom - bar.top, start_left, has_start, &rects)
-                        .ok_or_else(|| windows::core::Error::new(E_FAIL,
+                    let exclusion = uia_left_exclusion(
+                        bar.right - bar.left,
+                        bar.bottom - bar.top,
+                        start_left,
+                        has_start,
+                        &rects,
+                    );
+                    #[cfg(test)]
+                    if exclusion.is_none() {
+                        diagnostics.report(bar, start, start_left, has_start, count);
+                    }
+                    exclusion.ok_or_else(|| windows::core::Error::new(E_FAIL,
                             "UIA tree lacks a verifiable Start element or contains ambiguous left-side bounds"))
                 }
             };
             query().map_err(|error| format!(
                 "Weather HWND unavailable; native UIA cannot verify free space: {error}; renderer hidden, retrying. Supply measured set_left_exclusion() to override"))
+        }
+
+        fn boundary_cache(
+            &self,
+        ) -> windows::core::Result<windows::Win32::UI::Accessibility::IUIAutomationCacheRequest>
+        {
+            unsafe {
+                let request = self.0.CreateCacheRequest()?;
+                request.SetTreeScope(TreeScope_Element)?;
+                for property in [
+                    UIA_AutomationIdPropertyId,
+                    UIA_BoundingRectanglePropertyId,
+                    UIA_ClassNamePropertyId,
+                    UIA_IsOffscreenPropertyId,
+                    UIA_NativeWindowHandlePropertyId,
+                ] {
+                    request.AddProperty(property)?;
+                }
+                Ok(request)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    struct BoundaryDiagnostics {
+        native: Vec<[i32; 4]>,
+        cached: Vec<String>,
+    }
+
+    #[cfg(test)]
+    impl BoundaryDiagnostics {
+        fn new(native: &[[i32; 4]]) -> Self {
+            Self {
+                native: native.to_vec(),
+                cached: Vec::new(),
+            }
+        }
+
+        unsafe fn record(
+            &mut self,
+            index: i32,
+            element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+            bar: RECT,
+        ) -> windows::core::Result<()> {
+            let class: String = element
+                .CachedClassName()?
+                .to_string()
+                .chars()
+                .take(256)
+                .collect();
+            let id: String = element
+                .CachedAutomationId()?
+                .to_string()
+                .chars()
+                .take(256)
+                .collect();
+            let rect = element.CachedBoundingRectangle()?;
+            let offscreen = element.CachedIsOffscreen()?.as_bool();
+            self.cached.push(format!(
+                "{index}: class={class:?}, id={id:?}, relative_rect={:?}, offscreen={offscreen}",
+                [
+                    rect.left - bar.left,
+                    rect.top - bar.top,
+                    rect.right - bar.left,
+                    rect.bottom - bar.top
+                ]
+            ));
+            Ok(())
+        }
+
+        fn report(&self, bar: RECT, start: RECT, start_left: i32, has_start: bool, count: i32) {
+            eprintln!("UIA boundary rejection: bar={:?}, Start HWND={:?}, start_left={start_left}, has_start={has_start}, cached_count={count}, native_bounds={:?}\ncached_entries:\n{}",
+                [bar.left, bar.top, bar.right, bar.bottom],
+                [start.left, start.top, start.right, start.bottom], self.native, self.cached.join("\n"));
         }
     }
 
@@ -568,6 +649,8 @@ mod native {
     struct BarKey {
         hwnd: isize,
         pid: u32,
+        left: i32,
+        top: i32,
         width: i32,
         height: i32,
     }
@@ -583,7 +666,8 @@ mod native {
         discovered: Instant,
         boundary: Option<(u64, BarKey, i32)>,
         automation: Option<Automation>,
-        auto_boundary: Option<(BarKey, i32, Instant, Result<i32, String>)>,
+        auto_boundary: Option<(BarKey, [i32; 4], Result<i32, String>)>,
+        auto_retry: BoundaryRetry,
         paint: Box<Paint>,
         position: Option<(i32, i32, i32, i32)>,
         visible: bool,
@@ -606,6 +690,7 @@ mod native {
                 boundary: None,
                 automation: None,
                 auto_boundary: None,
+                auto_retry: BoundaryRetry::default(),
                 paint: Box::new(Paint::default()),
                 position: None,
                 visible: false,
@@ -617,7 +702,7 @@ mod native {
 
         fn refresh(&mut self, input: &Input) -> Result<(), String> {
             if self.last_input.as_ref() == Some(input)
-                && self.refreshed.elapsed() < DISCOVERY_INTERVAL
+                && self.refreshed.elapsed() < Duration::from_millis(u64::from(TICK_MS))
             {
                 return self.refresh_result.clone();
             }
@@ -660,6 +745,8 @@ mod native {
             let key = BarKey {
                 hwnd: self.parent as isize,
                 pid: self.parent_pid,
+                left: bar.left,
+                top: bar.top,
                 width: bar.right - bar.left,
                 height: bar.bottom - bar.top,
             };
@@ -700,28 +787,7 @@ mod native {
                 if !self.weather.is_null() && unsafe { IsWindow(self.weather) } != 0 {
                     window_rect(self.weather)?.right - bar.left
                 } else {
-                    let stale = self
-                        .auto_boundary
-                        .as_ref()
-                        .is_none_or(|(_, _, time, _)| time.elapsed() >= UIA_INTERVAL);
-                    if stale {
-                        let result = (|| {
-                            if self.automation.is_none() {
-                                self.automation = Some(Automation::new()?);
-                            }
-                            self.automation
-                                .as_ref()
-                                .expect("automation installed")
-                                .left_edge(self.parent, self.window, bar, start_rect)
-                        })();
-                        self.auto_boundary = Some((key, start_left, Instant::now(), result));
-                    }
-                    let (anchor, start, _, result) =
-                        self.auto_boundary.as_ref().expect("UIA cache installed");
-                    if *anchor != key || *start != start_left {
-                        return Err("Taskbar geometry changed; renderer hidden until the throttled UIA boundary refresh (at most 5s)".to_owned());
-                    }
-                    result.clone()?
+                    self.auto_left_edge(key, bar, start_rect)?
                 }
             };
             let dpi = i32::try_from(unsafe { GetDpiForWindow(self.parent) })
@@ -809,6 +875,44 @@ mod native {
                 self.paint.dirty = false;
             }
             Ok(())
+        }
+
+        fn auto_left_edge(&mut self, key: BarKey, bar: RECT, start: RECT) -> Result<i32, String> {
+            let start_bounds = [start.left, start.top, start.right, start.bottom];
+            let matches = self
+                .auto_boundary
+                .as_ref()
+                .is_some_and(|(anchor, cached_start, _)| {
+                    *anchor == key && *cached_start == start_bounds
+                });
+            if self.auto_retry.query_due(Instant::now(), matches) {
+                let result = (|| {
+                    if self.automation.is_none() {
+                        self.automation = Some(Automation::new()?);
+                    }
+                    self.automation
+                        .as_ref()
+                        .expect("automation installed")
+                        .left_edge(self.parent, self.window, bar, start)
+                })();
+                self.auto_retry.record(Instant::now(), result.is_ok());
+                self.auto_boundary = Some((key, start_bounds, result));
+            }
+            let (anchor, cached_start, result) =
+                self.auto_boundary.as_ref().expect("UIA cache installed");
+            if !self
+                .auto_retry
+                .usable(*anchor == key && *cached_start == start_bounds)
+            {
+                if let Err(error) = result {
+                    return Err(error.clone());
+                }
+                return Err(
+                    "Taskbar geometry changed; renderer hidden until a verified UIA retry"
+                        .to_owned(),
+                );
+            }
+            result.clone()
         }
 
         fn hide(&mut self) {
@@ -1159,7 +1263,14 @@ mod native {
                 left_exclusion: None,
                 boundary_revision: 0,
             };
-            let result = renderer.refresh(&input);
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let result = loop {
+                let result = renderer.refresh(&input);
+                if result.is_ok() || Instant::now() >= deadline {
+                    break result;
+                }
+                thread::sleep(Duration::from_millis(u64::from(TICK_MS)));
+            };
             eprintln!("native refresh: {result:?}");
             if !renderer.parent.is_null() {
                 eprintln!(
@@ -1405,6 +1516,51 @@ mod native {
 }
 
 #[cfg(any(windows, test))]
+#[derive(Default)]
+struct BoundaryRetry {
+    queried_at: Option<std::time::Instant>,
+    due_at: Option<std::time::Instant>,
+    failures: u8,
+    invalid: bool,
+}
+
+#[cfg(any(windows, test))]
+impl BoundaryRetry {
+    fn query_due(&mut self, now: std::time::Instant, geometry_matches: bool) -> bool {
+        if !geometry_matches && !self.invalid {
+            if let Some(queried) = self.queried_at {
+                self.invalid = true;
+                // Reflow may shorten a healthy cooldown, never the 250ms query floor.
+                self.due_at = Some(now.max(queried + std::time::Duration::from_millis(250)));
+            }
+        }
+        self.due_at.is_none_or(|due| now >= due)
+    }
+
+    fn record(&mut self, now: std::time::Instant, verified: bool) {
+        self.queried_at = Some(now);
+        self.invalid = !verified;
+        self.failures = if verified {
+            0
+        } else {
+            self.failures.saturating_add(1).min(5)
+        };
+        let millis = match self.failures {
+            1 => 250,
+            2 => 500,
+            3 => 1_000,
+            4 => 2_000,
+            _ => 5_000,
+        };
+        self.due_at = Some(now + std::time::Duration::from_millis(millis));
+    }
+
+    fn usable(&self, geometry_matches: bool) -> bool {
+        geometry_matches && self.queried_at.is_some() && !self.invalid
+    }
+}
+
+#[cfg(any(windows, test))]
 fn native_placement(
     bar_width: i32,
     bar_height: i32,
@@ -1508,6 +1664,58 @@ mod tests {
     use super::{
         native_placement, normalize_text, rect_contains, uia_host_is_container, uia_left_exclusion,
     };
+
+    #[test]
+    fn boundary_errors_retry_exponentially_without_querying_each_tick() {
+        use std::time::{Duration, Instant};
+        let mut retry = super::BoundaryRetry::default();
+        let mut now = Instant::now();
+        assert!(retry.query_due(now, false));
+        for millis in [250, 500, 1_000, 2_000, 5_000, 5_000] {
+            retry.record(now, false);
+            let delay = Duration::from_millis(millis);
+            assert!(!retry.usable(true));
+            let before_due = (now + delay).checked_sub(Duration::from_millis(1)).unwrap();
+            assert!(!retry.query_due(before_due, false));
+            now += delay;
+            assert!(retry.query_due(now, false));
+        }
+    }
+
+    #[test]
+    fn boundary_geometry_changes_invalidate_proof_and_preserve_the_query_floor() {
+        use std::time::{Duration, Instant};
+        let mut retry = super::BoundaryRetry::default();
+        let now = Instant::now();
+        retry.record(now, true);
+        assert!(retry.usable(true));
+        assert!(!retry.query_due(now + Duration::from_millis(100), false));
+        assert!(
+            !retry.usable(true),
+            "returning to old geometry is not fresh proof"
+        );
+        for millis in 101..250 {
+            assert!(!retry.query_due(now + Duration::from_millis(millis), false));
+        }
+        assert!(retry.query_due(now + Duration::from_millis(250), false));
+    }
+
+    #[test]
+    fn boundary_stable_success_uses_five_seconds_and_resets_failure_backoff() {
+        use std::time::{Duration, Instant};
+        let mut retry = super::BoundaryRetry::default();
+        let now = Instant::now();
+        for _ in 0..6 {
+            retry.record(now, false);
+        }
+        assert!(!retry.query_due(now + Duration::from_secs(2), false));
+        retry.record(now, true);
+        assert!(retry.usable(true));
+        assert!(!retry.query_due(now + Duration::from_millis(4_999), true));
+        assert!(retry.query_due(now + Duration::from_secs(5), true));
+        retry.record(now, false);
+        assert!(retry.query_due(now + Duration::from_millis(250), true));
+    }
 
     #[test]
     fn native_host_needs_measured_nonoccupying_bounds_and_real_parentage() {
