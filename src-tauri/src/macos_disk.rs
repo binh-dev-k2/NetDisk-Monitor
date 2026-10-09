@@ -48,10 +48,10 @@ fn checked_counter(value: i64, exact: bool) -> Result<u64, String> {
 /// Returns `(registry_entry_id, cumulative_read_bytes, cumulative_write_bytes)`.
 /// Virtual providers are excluded. Missing/malformed required properties, topology
 /// invalidation, and over-limit scans return an error, never a partial snapshot.
-/// Enumeration is bounded, but synchronous IOKit calls have no userspace timeout.
+/// Enumeration is bounded, but synchronous `IOKit` calls have no userspace timeout.
 ///
 /// # Errors
-/// Returns an error on unsupported platforms, malformed counters or failed IOKit calls.
+/// Returns an error on unsupported platforms, malformed counters or failed `IOKit` calls.
 #[cfg(target_os = "macos")]
 pub fn sample() -> Result<Vec<(u64, u64, u64)>, String> {
     native::sample()
@@ -220,7 +220,7 @@ mod native {
 
     fn read_driver(driver: &IoObject, keys: &Keys) -> Result<Option<(u64, u64, u64)>, String> {
         let mut id = 0;
-        let status = unsafe { IORegistryEntryGetRegistryEntryID(driver.0, &mut id) };
+        let status = unsafe { IORegistryEntryGetRegistryEntryID(driver.0, ptr::from_mut(&mut id)) };
         if status != 0 {
             return Err(format!(
                 "IORegistryEntryGetRegistryEntryID failed: {status}"
@@ -230,7 +230,11 @@ mod native {
         // No recursive registry walk (which could be unbounded) is necessary.
         let mut raw_parent = 0;
         let status = unsafe {
-            IORegistryEntryGetParentEntry(driver.0, c"IOService".as_ptr(), &mut raw_parent)
+            IORegistryEntryGetParentEntry(
+                driver.0,
+                c"IOService".as_ptr(),
+                ptr::from_mut(&mut raw_parent),
+            )
         };
         let parent = IoObject::new(raw_parent);
         if status != 0 {
@@ -266,8 +270,9 @@ mod native {
         let mut raw_iterator = 0;
         // This function consumes matching even on failure. Passing 0 uses the default
         // main port without referencing the macOS-12-only kIOMainPortDefault symbol.
-        let status =
-            unsafe { IOServiceGetMatchingServices(0, matching.into_raw(), &mut raw_iterator) };
+        let status = unsafe {
+            IOServiceGetMatchingServices(0, matching.into_raw(), ptr::from_mut(&mut raw_iterator))
+        };
         let iterator = IoObject::new(raw_iterator);
         if status != 0 {
             return Err(format!("IOServiceGetMatchingServices failed: {status}"));
@@ -311,7 +316,7 @@ mod tests {
             snapshot([Ok(Some((7, 900, 800)))]).unwrap(),
             vec![(7, 900, 800)]
         );
-        assert!(snapshot([]).unwrap().is_empty());
+        assert_eq!(snapshot([]).unwrap(), Vec::<(u64, u64, u64)>::new());
         assert_eq!(snapshot([Ok(Some((7, 2, 3)))]).unwrap(), vec![(7, 2, 3)]);
     }
 

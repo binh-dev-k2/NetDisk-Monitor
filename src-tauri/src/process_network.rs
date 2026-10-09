@@ -115,6 +115,7 @@ impl NetworkCollector {
     pub fn new() -> Self {
         Self
     }
+    #[allow(clippy::unused_self)] // Preserve the uniform platform collector API.
     pub fn snapshot(&self, _identities: &HashSet<String>) -> NetworkSnapshot {
         NetworkSnapshot {
             error: Some("Network theo PID chưa có collector native trên nền tảng này".to_owned()),

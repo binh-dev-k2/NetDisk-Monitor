@@ -925,7 +925,7 @@ mod tests {
         assert_eq!(records[0].timestamp_secs, (MINUTES as u64 + 4) * 60);
         assert_eq!(records.last().unwrap().timestamp_secs, 5 * 60);
         assert_eq!(store.read_minutes(2).unwrap(), records[..2]);
-        assert!(store.read_minutes(0).unwrap().is_empty());
+        assert_eq!(store.read_minutes(0).unwrap(), Vec::<HistoryRecord>::new());
     }
 
     #[test]
@@ -941,7 +941,7 @@ mod tests {
         assert_eq!(days(&store).len(), DAYS);
         assert_eq!(days(&store).last().unwrap().timestamp_secs, 3 * 86_400);
         assert_eq!(store.read_days(1).unwrap().len(), 1);
-        assert!(store.read_days(0).unwrap().is_empty());
+        assert_eq!(store.read_days(0).unwrap(), Vec::<HistoryRecord>::new());
         store.record(800 * 86_400, 1, [1; 4]).unwrap();
         assert_eq!(minutes(&store).len(), 1);
         assert_eq!(days(&store).len(), 1);
@@ -1104,7 +1104,7 @@ mod tests {
         let dir = Temp::new();
         let mut store = HistoryStore::open(&dir.0).unwrap();
         assert!(store.record(0, 0, [1; 4]).is_err());
-        assert!(minutes(&store).is_empty());
+        assert_eq!(minutes(&store), Vec::<HistoryRecord>::new());
         store.record(0, u64::MAX, [u64::MAX; 4]).unwrap();
         assert!(store.record(0, 1, [0; 4]).is_err());
         assert!(store.record(60, 1, [1; 4]).is_err());
@@ -1273,7 +1273,7 @@ mod tests {
         let dir = Temp::new();
         let nested = dir.0.join("nested");
         let mut store = HistoryStore::open(&nested).unwrap();
-        assert!(minutes(&store).is_empty());
+        assert_eq!(minutes(&store), Vec::<HistoryRecord>::new());
         store.record(u64::MAX, 1, [1; 4]).unwrap();
         store.flush().unwrap();
         drop(store);
