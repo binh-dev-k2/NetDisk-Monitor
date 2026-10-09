@@ -31,6 +31,7 @@ pub struct SystemCollector {
     networks: Networks,
     disks: Disks,
     network_counters: CounterAccumulator<String>,
+    #[cfg(not(target_os = "macos"))]
     disk_counters: CounterAccumulator<OsString>,
     disk_identities: HashMap<PathBuf, OsString>,
     last_disk_list_refresh: Instant,
@@ -52,6 +53,7 @@ impl SystemCollector {
             networks: Networks::new_with_refreshed_list(),
             disks,
             network_counters: CounterAccumulator::default(),
+            #[cfg(not(target_os = "macos"))]
             disk_counters: CounterAccumulator::default(),
             disk_identities,
             last_disk_list_refresh: Instant::now(),
@@ -274,6 +276,7 @@ impl ProcessCollector {
     }
 }
 
+#[cfg(any(windows, test))]
 fn connection_counts(pids: impl IntoIterator<Item = u32>) -> HashMap<String, u32> {
     pids.into_iter().fold(HashMap::new(), |mut counts, pid| {
         *counts.entry(pid.to_string()).or_default() += 1;

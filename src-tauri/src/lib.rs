@@ -28,7 +28,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex,
 };
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", windows))]
 use taskbar::TaskbarMode;
 #[cfg(feature = "desktop")]
 use tauri::{
@@ -73,6 +73,7 @@ struct MonitorState {
     processes: Mutex<ProcessSnapshot>,
     reset_generation: AtomicU64,
     overlay_settings: Mutex<OverlaySettings>,
+    #[cfg(windows)]
     taskbar_mode: Mutex<TaskbarMode>,
     taskbar_active: AtomicBool,
     overlay_pinned: AtomicBool,
@@ -194,6 +195,7 @@ impl Default for MonitorState {
             processes: Mutex::new(ProcessSnapshot::default()),
             reset_generation: AtomicU64::new(0),
             overlay_settings: Mutex::new(OverlaySettings::default()),
+            #[cfg(windows)]
             taskbar_mode: Mutex::new(TaskbarMode::default()),
             taskbar_active: AtomicBool::new(false),
             overlay_pinned: AtomicBool::new(true),
@@ -678,6 +680,7 @@ pub fn run() {
                     let app = app.clone();
                     tauri::async_runtime::spawn_blocking(move || {
                         let result = app.state::<service::RuntimeState>().shutdown();
+                        #[cfg(windows)]
                         if let Ok(mut mode) = app.state::<MonitorState>().taskbar_mode.lock() {
                             mode.disable();
                         }

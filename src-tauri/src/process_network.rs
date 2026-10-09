@@ -17,11 +17,13 @@
 //! Legacy PID-named / auto-GUID sessions are deliberately not adopted or stopped.
 use std::collections::{HashMap, HashSet};
 
+#[cfg(any(all(windows, feature = "desktop"), test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Transport {
     Tcp,
     Udp,
 }
+#[cfg(any(all(windows, feature = "desktop"), test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Packet {
     pid: u32,
@@ -29,6 +31,7 @@ struct Packet {
     download: bool,
 }
 
+#[cfg(any(all(windows, feature = "desktop"), test))]
 fn decode_packet(_transport: Transport, version: u8, opcode: u8, payload: &[u8]) -> Option<Packet> {
     // Microsoft v2 MOF: PID/size at 0/4, followed by two addresses and two ports.
     // Validate the common 20-byte IPv4 / 44-byte IPv6 prefix; unused trailing
@@ -53,18 +56,22 @@ fn decode_packet(_transport: Transport, version: u8, opcode: u8, payload: &[u8])
         download,
     })
 }
+#[cfg(any(all(windows, feature = "desktop"), test))]
 fn belongs_to_process(created: u64, ended: Option<u64>, event: u64) -> bool {
     event >= created && ended.is_none_or(|end| event <= end)
 }
 
+#[cfg(any(all(windows, feature = "desktop"), test))]
 fn retain_process(pid: u32, created: u64, live: bool, identities: &HashSet<String>) -> bool {
     identities.contains(&format!("{pid}:{created}")) || live
 }
 
+#[cfg(any(all(windows, feature = "desktop"), test))]
 struct CounterBank {
     counters: HashMap<String, [u64; 2]>,
     limit: usize,
 }
+#[cfg(any(all(windows, feature = "desktop"), test))]
 impl CounterBank {
     fn new(limit: usize) -> Self {
         Self {

@@ -165,7 +165,7 @@ pub(crate) fn start(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(mut latest) = runtime.latest.lock() {
                     *latest = Some(sample);
                 }
-                let mut snapshot = SystemSnapshot {
+                let snapshot = SystemSnapshot {
                     metrics,
                     interfaces: collection.interfaces,
                     total_memory_bytes: collection.total_memory_bytes,
@@ -175,6 +175,8 @@ pub(crate) fn start(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     storage_error: runtime.storage_error.lock().ok().and_then(|e| e.clone()),
                     taskbar_error: None,
                 };
+                #[cfg(windows)]
+                let mut snapshot = snapshot;
                 let settings = state
                     .overlay_settings
                     .lock()

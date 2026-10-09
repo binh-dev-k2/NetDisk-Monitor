@@ -14,17 +14,22 @@ permissions:
 
 jobs:
   macos-native-probe:
+    name: macOS disk ${{ matrix.mode }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, macos-26-intel]
+        include:
+          - os: macos-latest
+            mode: abi-only
+          - os: macos-26-intel
+            mode: live
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Native IOKit SDK checks and live smoke
-        run: bash scripts/validate-macos-disk.sh
+      - name: IOKit SDK checks (${{ matrix.mode }})
+        run: bash scripts/validate-macos-disk.sh '${{ matrix.mode }}'
 
   macos-build-test:
     runs-on: macos-latest
@@ -53,6 +58,8 @@ jobs:
         run: pnpm build
       - name: Test Rust parent integration
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked --features desktop --lib
+      - name: Strict macOS Rust lint
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --features desktop --all-targets -- -D warnings
       - name: Build macOS desktop binary
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --features desktop,tauri/custom-protocol
       - name: Upload macOS executable

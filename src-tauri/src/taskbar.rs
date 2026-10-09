@@ -4,6 +4,7 @@
 //! `Win32_UI_Accessibility`. All COM objects stay on the renderer thread.
 //! Native GDI output is opaque; `WebView` opacity settings do not apply here.
 
+#[cfg(windows)]
 #[derive(Default)]
 pub struct TaskbarMode {
     text: String,
@@ -13,6 +14,7 @@ pub struct TaskbarMode {
     session: Option<native::Session>,
 }
 
+#[cfg(windows)]
 impl TaskbarMode {
     /// Ignores overlay. Dimensions are physical native pixels. Waits at most 750ms
     /// for worker startup, not attachment; placement failures appear in `last_error()`.
@@ -138,6 +140,7 @@ impl TaskbarMode {
     }
 }
 
+#[cfg(windows)]
 impl Drop for TaskbarMode {
     // Dropping a still-running JoinHandle detaches it; Shared and HWND state remain
     // owned by that worker until it observes stop. Never block the caller on Win32.
@@ -146,6 +149,7 @@ impl Drop for TaskbarMode {
     }
 }
 
+#[cfg(windows)]
 fn validate_size(width: i32, height: i32) -> Result<(), String> {
     if width <= 0 || height <= 0 {
         return Err("Native taskbar dimensions must be positive".to_owned());
@@ -1400,6 +1404,7 @@ mod native {
     }
 }
 
+#[cfg(any(windows, test))]
 fn native_placement(
     bar_width: i32,
     bar_height: i32,
@@ -1431,6 +1436,7 @@ fn native_placement(
     Some((x, (bar_height - height) / 2, width, height))
 }
 
+#[cfg(any(windows, test))]
 fn normalize_text(text: &str) -> String {
     let bounded: String = text.chars().take(2048).collect();
     bounded
@@ -1447,6 +1453,7 @@ fn normalize_text(text: &str) -> String {
         .join("\n")
 }
 
+#[cfg(any(windows, test))]
 fn uia_host_is_container(bar: [i32; 4], host: [i32; 4], is_child: bool) -> bool {
     is_child
         && (host == bar
@@ -1458,6 +1465,7 @@ fn uia_host_is_container(bar: [i32; 4], host: [i32; 4], is_child: bool) -> bool 
                 && host[1] <= bar[3]))
 }
 
+#[cfg(any(windows, test))]
 fn rect_contains(outer: [i32; 4], inner: [i32; 4]) -> bool {
     inner[2] > inner[0]
         && inner[3] > inner[1]
@@ -1467,6 +1475,7 @@ fn rect_contains(outer: [i32; 4], inner: [i32; 4]) -> bool {
         && inner[3] <= outer[3]
 }
 
+#[cfg(any(windows, test))]
 fn uia_left_exclusion(
     width: i32,
     height: i32,
