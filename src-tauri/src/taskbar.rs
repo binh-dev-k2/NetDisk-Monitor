@@ -202,12 +202,12 @@ mod native {
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumChildWindows,
-            FindWindowW, GetClassNameW, GetClientRect, GetMessageW, GetWindowLongPtrW,
+            FindWindowW, GetClassNameW, GetClientRect, GetMessageW, GetWindow, GetWindowLongPtrW,
             GetWindowRect, GetWindowThreadProcessId, IsChild, IsWindow, IsWindowVisible, KillTimer,
             RegisterClassW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, MA_NOACTIVATE, MSG, SWP_NOACTIVATE,
-            SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE,
-            WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE,
+            TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, GW_HWNDPREV, HWND_TOP, MA_NOACTIVATE,
+            MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_MOUSEACTIVATE,
+            WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE,
         },
     };
 
@@ -837,21 +837,11 @@ mod native {
                 self.position = None;
                 self.visible = false;
             }
-            if self.position != Some(placement) {
-                if unsafe {
-                    SetWindowPos(
-                        self.window,
-                        null_mut(),
-                        placement.0,
-                        placement.1,
-                        placement.2,
-                        placement.3,
-                        SWP_NOACTIVATE | SWP_NOZORDER,
-                    )
-                } == 0
-                {
-                    return Err(win_error("SetWindowPos(native child)"));
-                }
+            // Explorer can raise its full-taskbar XAML bridge without moving our child.
+            if self.position != Some(placement)
+                || !unsafe { GetWindow(self.window, GW_HWNDPREV) }.is_null()
+            {
+                position_window(self.window, placement)?;
                 self.position = Some(placement);
                 self.paint.dirty = true;
             }
@@ -932,6 +922,24 @@ mod native {
         fn drop(&mut self) {
             self.destroy_window();
         }
+    }
+
+    fn position_window(window: HWND, placement: (i32, i32, i32, i32)) -> Result<(), String> {
+        if unsafe {
+            SetWindowPos(
+                window,
+                HWND_TOP,
+                placement.0,
+                placement.1,
+                placement.2,
+                placement.3,
+                SWP_NOACTIVATE,
+            )
+        } == 0
+        {
+            return Err(win_error("SetWindowPos(native child)"));
+        }
+        Ok(())
     }
 
     #[derive(Default)]
@@ -1228,9 +1236,72 @@ mod native {
             [rect.left, rect.top, rect.right, rect.bottom]
         }
 
+        #[test]
+        #[ignore = "read-only diagnostic of native taskbar windows on the interactive desktop"]
+        fn live_inspect_installed_taskbar() {
+            use windows_sys::Win32::UI::HiDpi::{
+                GetAwarenessFromDpiAwarenessContext, GetWindowDpiAwarenessContext,
+            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetWindow, GWL_EXSTYLE, GW_HWNDPREV,
+            };
+            unsafe fn report_inner(window: HWND, parameter: LPARAM) -> i32 {
+                let mut name = [0u16; 256];
+                let length = GetClassNameW(window, name.as_mut_ptr(), 256);
+                let name = String::from_utf16_lossy(&name[..usize::try_from(length).unwrap_or(0)]);
+                let mut pid = 0;
+                let tid = GetWindowThreadProcessId(window, &raw mut pid);
+                let mut client = RECT::default();
+                GetClientRect(window, &raw mut client);
+                eprintln!("HWND={window:?} class={name} pid={pid} tid={tid} parent={:?} prev={:?} visible={} rect={:?} client={:?} dpi={} awareness={} style={:x} ex={:x}",
+                    GetParent(window), GetWindow(window, GW_HWNDPREV), IsWindowVisible(window),
+                    window_rect(window).map(bounds), bounds(client), GetDpiForWindow(window),
+                    GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(window)),
+                GetWindowLongPtrW(window, GWL_STYLE), GetWindowLongPtrW(window, GWL_EXSTYLE));
+                if name == CLASS && IsWindowVisible(window) != 0 {
+                    let inspection = &mut *(parameter as *mut (usize, bool, bool));
+                    inspection.0 += 1;
+                    inspection.1 |= !GetWindow(window, GW_HWNDPREV).is_null();
+                }
+                1
+            }
+            unsafe extern "system" fn report(window: HWND, parameter: LPARAM) -> i32 {
+                // Keep diagnostic I/O panics from unwinding through Win32's callback ABI.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    report_inner(window, parameter)
+                }))
+                .unwrap_or_else(|_| {
+                    (*(parameter as *mut (usize, bool, bool))).2 = true;
+                    0
+                })
+            }
+            let _dpi = DpiContext::new().unwrap();
+            let parent = unsafe { FindWindowW(wide("Shell_TrayWnd").as_ptr(), null()) };
+            assert!(!parent.is_null());
+            let mut inspection = (0_usize, false, false);
+            let parameter = (&raw mut inspection) as LPARAM;
+            unsafe {
+                report(parent, parameter);
+                EnumChildWindows(parent, Some(report), parameter);
+            }
+            assert!(!inspection.2, "native inspection callback failed");
+            eprintln!(
+                "visible monitors={}, occluded={}",
+                inspection.0, inspection.1
+            );
+            assert!(
+                !inspection.1,
+                "installed monitor is behind a taskbar sibling"
+            );
+        }
+
         fn assert_native_child(window: HWND, parent: HWND) {
             assert!(!window.is_null(), "native renderer did not create a child");
             assert_eq!(unsafe { GetParent(window) }, parent);
+            assert!(
+                unsafe { GetWindow(window, GW_HWNDPREV) }.is_null(),
+                "native monitor is below a taskbar sibling"
+            );
             let mut class = [0_u16; 128];
             let length = unsafe { GetClassNameW(window, class.as_mut_ptr(), 128) };
             assert_eq!(
@@ -1355,6 +1426,56 @@ mod native {
         }
 
         #[test]
+        fn native_position_recovers_sibling_occlusion_without_activation() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetForegroundWindow, GetWindow, GW_HWNDPREV, HWND_TOP,
+            };
+            let _dpi = DpiContext::new().unwrap();
+            let create = |parent, style| {
+                let window = unsafe {
+                    CreateWindowExW(
+                        WS_EX_NOACTIVATE,
+                        wide("STATIC").as_ptr(),
+                        null(),
+                        style,
+                        0,
+                        0,
+                        400,
+                        60,
+                        parent,
+                        null_mut(),
+                        GetModuleHandleW(null()),
+                        null(),
+                    )
+                };
+                assert!(!window.is_null());
+                OverlayGuard(window)
+            };
+            let parent = create(null_mut(), 0);
+            let cover = create(parent.0, WS_CHILD);
+            let child = create(parent.0, WS_CHILD);
+            let foreground = unsafe { GetForegroundWindow() };
+            assert_eq!(unsafe { GetWindow(child.0, GW_HWNDPREV) }, cover.0);
+            for _ in 0..2 {
+                position_window(child.0, (40, 5, 160, 40)).unwrap();
+                assert!(
+                    unsafe { GetWindow(child.0, GW_HWNDPREV) }.is_null(),
+                    "monitor is still below the full-size composition sibling"
+                );
+                assert_eq!(unsafe { GetParent(child.0) }, parent.0);
+                assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+                let mut client = RECT::default();
+                unsafe {
+                    GetClientRect(child.0, &raw mut client);
+                }
+                assert_eq!(bounds(client), [0, 0, 160, 40]);
+                unsafe {
+                    SetWindowPos(cover.0, HWND_TOP, 0, 0, 400, 60, SWP_NOACTIVATE);
+                }
+            }
+        }
+
+        #[test]
         #[ignore = "runs eight native enable/disable cycles on the current Windows desktop"]
         fn live_enable_disable_finishes_without_parenting_overlay() {
             let overlay = OverlayGuard(unsafe {
@@ -1408,6 +1529,7 @@ mod native {
                 };
                 assert_native_child(child, parent);
                 if cycle == 0 {
+                    assert_worker_recovers_z_order(parent, child);
                     // Cross the production cache interval while its message loop runs.
                     thread::sleep(UIA_INTERVAL + Duration::from_secs(1));
                     assert_ne!(unsafe { IsWindowVisible(child) }, 0);
@@ -1455,6 +1577,40 @@ mod native {
                 assert_eq!(unsafe { IsWindow(child) }, 0);
                 eprintln!("cycle {cycle}: enable={enable_elapsed:?}, cleanup={:?}, child destroyed, overlay unchanged", stopped.elapsed());
             }
+        }
+
+        fn assert_worker_recovers_z_order(parent: HWND, child: HWND) {
+            // A hidden sibling simulates reordering without altering Explorer HWNDs.
+            let sibling = OverlayGuard(unsafe {
+                CreateWindowExW(
+                    WS_EX_NOACTIVATE,
+                    wide("STATIC").as_ptr(),
+                    null(),
+                    WS_CHILD,
+                    0,
+                    0,
+                    1,
+                    1,
+                    parent,
+                    null_mut(),
+                    GetModuleHandleW(null()),
+                    null(),
+                )
+            });
+            assert!(!sibling.0.is_null());
+            unsafe {
+                SetWindowPos(sibling.0, HWND_TOP, 0, 0, 1, 1, SWP_NOACTIVATE);
+            }
+            assert!(!unsafe { GetWindow(child, GW_HWNDPREV) }.is_null());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !unsafe { GetWindow(child, GW_HWNDPREV) }.is_null() {
+                assert!(
+                    Instant::now() < deadline,
+                    "cached placement did not recover sibling z-order"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            eprintln!("production worker recovered sibling z-order with unchanged metrics");
         }
     }
 

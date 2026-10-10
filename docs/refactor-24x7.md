@@ -75,6 +75,9 @@ not a promise of lossless accounting.
 
 ## Understanding Checklist
 
+- [ ] Visible HWND flags and valid bounds do not prove on-screen visibility; sibling z-order matters.
+- [ ] The old taskbar reused a popup WebView; the native replacement creates a new child and must establish its z-order.
+- [ ] HWND_TOP orders taskbar siblings only; it is not a global HWND_TOPMOST overlay.
 - [ ] Native Start HWND is authoritative; a duplicate UIA Start element may disappear during taskbar reflow.
 - [ ] Connection count cannot attribute bytes to a process.
 - [ ] Process I/O is not physical disk traffic.

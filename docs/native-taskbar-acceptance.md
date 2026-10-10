@@ -1,5 +1,56 @@
 # Native Windows Taskbar Acceptance
 
+## Visibility Regression Correction (2026-10-10)
+
+Earlier bounds and `IsWindowVisible` checks were insufficient to claim visual
+acceptance. The user's production screenshot showed no monitor despite selected
+taskbar mode. A read-only probe of installed PID 9904 found its native child at
+`[352, 1020, 644, 1080]`, DPI 120, parent `Shell_TrayWnd`, and visible flag set.
+It was below `Windows.UI.Composition.DesktopWindowContentBridge`, which covered
+the entire taskbar. The native renderer retained that ordering with `SWP_NOZORDER`.
+
+Historical comparison: commits `c73cb2f` (July 16) and `8c8f31e` (August 1)
+reparented an existing transparent Tauri/WebView popup into Explorer. Taskbar
+code was unchanged between `8c8f31e` and pre-refactor `f2c1066`. The replacement
+creates a new `WS_CHILD`; it must explicitly establish the sibling ordering.
+The old implementation also guessed a left offset of 180 pixels and attributed
+process network rates by connection count. It is not an accuracy-safe rollback.
+
+The fix uses `HWND_TOP` with `SWP_NOACTIVATE`, never global `HWND_TOPMOST`.
+The 250 ms native-worker tick detects a preceding sibling even when measured
+position and input text are unchanged. Stable ordering causes no positioning call.
+A hidden-HWND regression failed before the fix and passed afterward; it checks
+repeated occlusion recovery, preserved parentage, size and unchanged foreground.
+
+Verified: 17 focused taskbar tests passed (4 interactive tests ignored by default),
+strict whole-crate Clippy passed, and the release build succeeded. The explicit
+interactive run passed 4 tests in 12.02 seconds: read-only desktop enumeration
+(no installed monitor in that run), three renderer/lifecycle exercises, two rows,
+7 metrics at 332x60, eight enable/disable cycles, and production worker z-order
+recovery with unchanged metrics. The display changed from 1920x1080 to 2560x1440
+during this session; the final live child was `[780, 1380, 964, 1440]`, and Start
+was `[974, 1380, 1030, 1440]`, DPI 120. No desktop settings were changed by tests.
+
+Installed release SHA256:
+`2974D9F1D87A5F898620C6B05A04D015977A3B8ADD3FE803E0E2C474E34B8559`.
+One installed instance was launched (PID 3940). This does not yet prove the
+user-visible production pixels. Taskbar mode is not persisted across restart;
+the new instance needs its taskbar mode selected. No full visual sign-off claimed.
+
+PID 3940 subsequently disappeared without user action; no matching Application
+Error/WER event was found. Its cause is unresolved, not classified as a taskbar
+button failure. A single same-release diagnostic instance (PID 23280) was launched
+with stdout/stderr redirected to `netdisk-startup-zorder.*.log` in the system temp
+directory. It survived a 120-second exit-code watch and was still present about
+seven minutes after startup, with no stderr. No automatic restart loop was added.
+This is a limited non-reproduction, not a fix or 24-hour stability acceptance.
+
+References: [TrafficMonitor Win11 parent and positioning](https://github.com/zhongyang219/TrafficMonitor/blob/master/TrafficMonitor/Win11TaskbarDlg.cpp),
+[TrafficMonitor reparenting](https://github.com/zhongyang219/TrafficMonitor/blob/master/TrafficMonitor/TaskBarDlg.cpp),
+and [CreateWindowEx child z-order semantics](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexw).
+
+The evidence below records older runs, not visual acceptance of the current app.
+
 Scope: `src-tauri/src/taskbar.rs` and this document only. Cargo, dependencies,
 other agents' files, and Git history were not changed by this work. No custom
 external GUI automation, Explorer restart, or desktop-setting changes were used.
