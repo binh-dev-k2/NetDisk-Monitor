@@ -79,6 +79,7 @@ export function OverviewTab({
       <SettingsPanel
         overlayVisible={overlayVisible}
         taskbarMode={taskbarMode}
+        taskbarError={snapshot.taskbarError}
         isPendingToggle={isPendingToggle}
         overlaySettings={overlaySettings}
         autostart={autostart}

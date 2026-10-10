@@ -63,6 +63,23 @@ fixed-delay behavior and passed after this change. Final current-crate live
 tests passed as recorded above; no actual live reflow was induced. This improves
 bounded recovery, not a guarantee that every Explorer UIA provider is available.
 
+The later end-user reproduction identified the remaining false dependency: Start
+had already been verified through its native HWND and physical bounds, but the
+fallback also required a duplicate Start element in the UIA snapshot. Windows 11
+can omit that duplicate during taskbar reflow, so the renderer hid even though the
+native boundary remained valid. A red regression now covers that case. The fallback
+still requires the native Start HWND, verified XAML host/DPI coordinates, and rejects
+ambiguous controls crossing the Start boundary.
+
+Post-fix evidence on the same 1920x1080, 125% DPI desktop: 122 Rust tests passed
+(7 explicit live/soak/permission ignores), strict all-target Clippy passed, and all
+three native taskbar acceptance tests passed in 10.89 seconds. A seven-metric,
+two-row payload measured 332x60 and was placed at [312,1020,644,1080], between the
+198 px left exclusion and Start at x=654. Frontend evidence is now 60 tests across
+13 files plus a clean TypeScript and production Vite build. The installed executable
+was updated from the production release build; SHA-256 is
+`58C3A55675049059A82E25EF144F11E15758E5A0335E26D5A72C6FE6DF2AC886`.
+
 ## Release Gates
 
 - [x] Final whole-crate Rust tests and strict Clippy.

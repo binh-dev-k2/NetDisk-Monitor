@@ -149,11 +149,12 @@ backticks, and the SDK's `E_FAIL` constant instead of handwritten HRESULT casts.
 - [x] Failure/reflow retry policy: three red-to-green pure regressions; short
       retry starts at 250 ms and backs off to 5s, with no reuse of invalid proof.
 
-A normal-desktop intermediate rerun failed Start validation and later recovered.
-The underlying intermittent missing-Start condition remains unproven. The new
-retry policy avoids retaining failed proof for a fixed five seconds, but does not
-claim continuous availability of Explorer's UIA tree. Test-only bounded diagnostics
-retain native bounds and all cached Start/offscreen records on future failures.
+A normal-desktop intermediate rerun failed because the UIA snapshot omitted the
+duplicate Start element even though the native Start HWND and bounds were valid.
+The renderer no longer requires that redundant UIA element. It still fails closed
+unless the native Start HWND, XAML host, physical coordinates and all occupied
+left-side bounds are verified. The post-fix live suite passed three tests, including
+a 332x60 seven-metric payload, two rows, and eight lifecycle cycles.
 
 ## Remaining Desktop States
 

@@ -75,6 +75,7 @@ not a promise of lossless accounting.
 
 ## Understanding Checklist
 
+- [ ] Native Start HWND is authoritative; a duplicate UIA Start element may disappear during taskbar reflow.
 - [ ] Connection count cannot attribute bytes to a process.
 - [ ] Process I/O is not physical disk traffic.
 - [ ] PID reuse requires creation-time identity.

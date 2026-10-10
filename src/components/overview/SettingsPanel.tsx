@@ -4,6 +4,7 @@ import type { OverlaySettings } from '../../lib/overlay-settings';
 type SettingsPanelProps = {
   overlayVisible: boolean;
   taskbarMode: boolean;
+  taskbarError?: string | null;
   isPendingToggle: boolean;
   overlaySettings: OverlaySettings;
   autostart: boolean;
@@ -18,6 +19,7 @@ type SettingsPanelProps = {
 export function SettingsPanel({
   overlayVisible,
   taskbarMode,
+  taskbarError,
   isPendingToggle,
   overlaySettings,
   autostart,
@@ -44,6 +46,7 @@ export function SettingsPanel({
             <option value="taskbar">{/(Macintosh|Mac OS X)/.test(navigator.userAgent) ? 'Hiện trên menu bar' : 'Ghim vào Taskbar'}</option>
             <option value="hidden">Ẩn Widget</option>
           </select>
+          {taskbarMode && taskbarError && <div className="diagnostics" role="alert">{taskbarError}</div>}
         </div>
 
         <div className="control-field opacity-field">

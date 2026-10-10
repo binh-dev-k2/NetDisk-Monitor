@@ -164,10 +164,7 @@ pub(crate) fn wide(value: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 mod native {
-    use super::{
-        native_placement, rect_contains, uia_host_is_container, uia_left_exclusion, wide,
-        BoundaryRetry,
-    };
+    use super::{native_placement, uia_host_is_container, uia_left_exclusion, wide, BoundaryRetry};
     use std::{
         ptr::{null, null_mut},
         sync::{
@@ -498,7 +495,6 @@ mod native {
                         .map_err(|error| windows::core::Error::new(E_FAIL, error))?;
                     #[cfg(test)]
                     let mut diagnostics = BoundaryDiagnostics::new(&rects);
-                    let mut has_start = false;
                     let start_left = start.left - bar.left;
                     for index in 0..count {
                         let element = items.GetElement(index)?;
@@ -512,7 +508,6 @@ mod native {
                         if element.CachedIsOffscreen()?.as_bool() {
                             continue;
                         }
-                        let id = element.CachedAutomationId()?.to_string();
                         let rect = element.CachedBoundingRectangle()?;
                         let relative = [
                             rect.left - bar.left,
@@ -520,27 +515,26 @@ mod native {
                             rect.right - bar.left,
                             rect.bottom - bar.top,
                         ];
-                        if class == "Start" || id == "StartButton" || id == "Start" {
-                            has_start |= rect_contains(
-                                [start.left, start.top, start.right, start.bottom],
-                                [rect.left, rect.top, rect.right, rect.bottom],
-                            );
-                        }
                         rects.push(relative);
                     }
+                    // The native Start HWND and its bounds were already verified above.
+                    // UIA can transiently omit the duplicate XAML Start element on reflow.
                     let exclusion = uia_left_exclusion(
                         bar.right - bar.left,
                         bar.bottom - bar.top,
                         start_left,
-                        has_start,
                         &rects,
                     );
                     #[cfg(test)]
                     if exclusion.is_none() {
-                        diagnostics.report(bar, start, start_left, has_start, count);
+                        diagnostics.report(bar, start, start_left, count);
                     }
-                    exclusion.ok_or_else(|| windows::core::Error::new(E_FAIL,
-                            "UIA tree lacks a verifiable Start element or contains ambiguous left-side bounds"))
+                    exclusion.ok_or_else(|| {
+                        windows::core::Error::new(
+                            E_FAIL,
+                            "UIA tree contains ambiguous left-side bounds",
+                        )
+                    })
                 }
             };
             query().map_err(|error| format!(
@@ -615,8 +609,8 @@ mod native {
             Ok(())
         }
 
-        fn report(&self, bar: RECT, start: RECT, start_left: i32, has_start: bool, count: i32) {
-            eprintln!("UIA boundary rejection: bar={:?}, Start HWND={:?}, start_left={start_left}, has_start={has_start}, cached_count={count}, native_bounds={:?}\ncached_entries:\n{}",
+        fn report(&self, bar: RECT, start: RECT, start_left: i32, count: i32) {
+            eprintln!("UIA boundary rejection: bar={:?}, Start HWND={:?}, start_left={start_left}, cached_count={count}, native_bounds={:?}\ncached_entries:\n{}",
                 [bar.left, bar.top, bar.right, bar.bottom],
                 [start.left, start.top, start.right, start.bottom], self.native, self.cached.join("\n"));
         }
@@ -1252,6 +1246,37 @@ mod native {
 
         #[test]
         #[ignore = "creates this renderer's HWND on the current interactive Windows taskbar"]
+        fn live_seven_metric_renderer_fits_verified_space() {
+            let _dpi = DpiContext::new().unwrap();
+            let _apartment = ComApartment::new().unwrap();
+            let mut renderer = Renderer::new(register_class().unwrap());
+            let input = Input {
+                text:
+                    "D 999.9K/s\tR 999.9M/s\tRAM 99.9G\t24h 59m\nU 999.9K/s\tW 999.9M/s\tNET 999.9G"
+                        .to_owned(),
+                width: 1,
+                height: 1,
+                left_exclusion: None,
+                boundary_revision: 0,
+            };
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let result = loop {
+                let result = renderer.refresh(&input);
+                if result.is_ok() || Instant::now() >= deadline {
+                    break result;
+                }
+                thread::sleep(Duration::from_millis(u64::from(TICK_MS)));
+            };
+            eprintln!(
+                "seven metrics: result={result:?}, content={}x{}, placement={:?}",
+                renderer.paint.content_width, renderer.paint.content_height, renderer.position
+            );
+            result.expect("seven compact metrics must fit the verified taskbar space");
+            assert!(renderer.visible);
+        }
+
+        #[test]
+        #[ignore = "creates this renderer's HWND on the current interactive Windows taskbar"]
         fn live_native_renderer_parent_bounds_and_two_rows() {
             let _dpi = DpiContext::new().unwrap();
             let _apartment = ComApartment::new().unwrap();
@@ -1622,27 +1647,12 @@ fn uia_host_is_container(bar: [i32; 4], host: [i32; 4], is_child: bool) -> bool 
 }
 
 #[cfg(any(windows, test))]
-fn rect_contains(outer: [i32; 4], inner: [i32; 4]) -> bool {
-    inner[2] > inner[0]
-        && inner[3] > inner[1]
-        && inner[0] >= outer[0]
-        && inner[1] >= outer[1]
-        && inner[2] <= outer[2]
-        && inner[3] <= outer[3]
-}
-
-#[cfg(any(windows, test))]
-fn uia_left_exclusion(
-    width: i32,
-    height: i32,
-    start: i32,
-    has_start: bool,
-    rects: &[[i32; 4]],
-) -> Option<i32> {
-    if !has_start || width <= 0 || height <= 0 || start < 0 || start > width {
+fn uia_left_exclusion(width: i32, height: i32, start: i32, rects: &[[i32; 4]]) -> Option<i32> {
+    if width <= 0 || height <= 0 || start < 0 || start > width {
         return None;
     }
     let mut right = 0;
+    let mut has_left_bound = false;
     for &[left, top, end, bottom] in rects {
         if end <= left || bottom <= top || bottom <= 0 || top >= height || left >= start {
             continue;
@@ -1654,16 +1664,15 @@ fn uia_left_exclusion(
         if left < 0 || end > start {
             return None;
         }
+        has_left_bound = true;
         right = right.max(end);
     }
-    Some(right)
+    has_left_bound.then_some(right)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        native_placement, normalize_text, rect_contains, uia_host_is_container, uia_left_exclusion,
-    };
+    use super::{native_placement, normalize_text, uia_host_is_container, uia_left_exclusion};
 
     #[test]
     fn boundary_errors_retry_exponentially_without_querying_each_tick() {
@@ -1729,26 +1738,12 @@ mod tests {
     }
 
     #[test]
-    fn xaml_start_inset_is_verified_without_coordinate_tolerance() {
-        let native = [626, 1020, 685, 1080];
-        assert!(rect_contains(native, [627, 1020, 683, 1080]));
-        assert!(rect_contains(native, native));
-        assert!(!rect_contains(native, [625, 1020, 683, 1080]));
-        assert!(!rect_contains(native, [627, 1019, 683, 1080]));
-        assert!(!rect_contains(native, [627, 1020, 686, 1080]));
-        assert!(!rect_contains(native, [627, 1020, 683, 1081]));
-        assert!(!rect_contains(native, [627, 1020, 627, 1080]));
-        assert!(!rect_contains(native, [627, 1020, 683, 1020]));
-    }
-
-    #[test]
     fn uia_reserves_all_visible_left_controls_not_just_weather() {
         assert_eq!(
             uia_left_exclusion(
                 1920,
                 48,
                 800,
-                true,
                 &[
                     [0, 0, 1920, 48],
                     [12, 4, 150, 44],
@@ -1761,17 +1756,18 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_uia_tree_is_not_proof_of_free_space() {
+    fn native_start_does_not_require_a_duplicate_uia_start_element() {
+        assert_eq!(uia_left_exclusion(1920, 48, 800, &[[0, 0, 1920, 48]]), None);
         assert_eq!(
-            uia_left_exclusion(1920, 48, 800, false, &[[0, 0, 1920, 48]]),
+            uia_left_exclusion(1920, 48, 800, &[[0, 0, 1920, 48], [8, 0, 198, 48]]),
+            Some(198)
+        );
+        assert_eq!(
+            uia_left_exclusion(1920, 48, 800, &[[800, 0, 846, 48]]),
             None
         );
         assert_eq!(
-            uia_left_exclusion(1920, 48, 800, true, &[[800, 0, 846, 48]]),
-            Some(0)
-        );
-        assert_eq!(
-            uia_left_exclusion(1920, 48, 800, true, &[[200, 0, 900, 48]]),
+            uia_left_exclusion(1920, 48, 800, &[[200, 0, 900, 48]]),
             None
         );
     }
