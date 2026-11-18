@@ -1,0 +1,132 @@
+@layer components {
+  .disk-layout { display: flex; flex-direction: column; gap: 14px; min-inline-size: 0; }
+
+  .disk-target-pills, .disk-breadcrumbs, .disk-subtabs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-inline-size: 0;
+  }
+
+  .disk-target-btn, .disk-subtab-btn {
+    min-block-size: 28px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .disk-target-btn:hover:not(:disabled), .disk-subtab-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--bg-card-hover);
+    border-color: var(--border-hover);
+  }
+  .disk-target-btn.active, .disk-subtab-btn.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent-border);
+  }
+
+  .disk-path-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+  }
+  .disk-path-bar code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+
+  .treemap-canvas {
+    position: relative;
+    inline-size: 100%;
+    block-size: 230px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    overflow: hidden;
+  }
+
+  .treemap-tile {
+    position: absolute;
+    padding: 6px 8px;
+    border: 1px solid var(--bg-panel);
+    background: var(--accent-soft);
+    color: var(--text-primary);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: space-between;
+    text-align: start;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .treemap-tile.tone-0 { background: color-mix(in oklab, var(--accent) 18%, var(--bg-card)); }
+  .treemap-tile.tone-1 { background: color-mix(in oklab, var(--color-down) 16%, var(--bg-card)); }
+  .treemap-tile.tone-2 { background: color-mix(in oklab, var(--color-up) 16%, var(--bg-card)); }
+  .treemap-tile.tone-3 { background: color-mix(in oklab, var(--color-read) 16%, var(--bg-card)); }
+  .treemap-tile.tone-4 { background: color-mix(in oklab, var(--color-write) 16%, var(--bg-card)); }
+  .treemap-tile.is-other { background: var(--bg-surface); cursor: default; }
+  .treemap-tile:hover:not(:disabled) { border-color: var(--text-primary); z-index: 2; }
+  .treemap-tile:disabled { cursor: default; }
+  .treemap-tile strong { font-size: var(--text-xs); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-inline-size: 100%; }
+  .treemap-tile span { font-size: var(--text-xs); color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .disk-entries-list { display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; }
+  .disk-entry-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    padding: 8px 12px;
+    border-block-end: 1px solid var(--border-color);
+    background: var(--bg-card);
+    min-inline-size: 0;
+  }
+  .disk-entry-row:last-child { border-block-end: 0; }
+  .disk-entry-meta { display: flex; flex-direction: column; min-inline-size: 0; flex: 1 1 240px; }
+  .disk-entry-meta b { font-size: var(--text-sm); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .disk-entry-meta small { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+  .disk-entry-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+  .cleaner-rule-card { gap: 8px; }
+  .cleaner-rule-card:has(input:checked) { border-color: var(--accent-border); background: color-mix(in oklab, var(--accent-soft) 55%, var(--bg-card)); }
+  .cleaner-rule-check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; min-inline-size: 0; flex: 1; }
+  .cleaner-rule-check input {
+    appearance: none;
+    flex-shrink: 0;
+    inline-size: 15px;
+    block-size: 15px;
+    margin-block-start: 2px;
+    border: 1px solid var(--border-hover);
+    border-radius: 4px;
+    background: var(--bg-panel);
+    position: relative;
+  }
+  .cleaner-rule-check input:checked { background: var(--accent); border-color: var(--accent); }
+  .cleaner-rule-check input:checked::after {
+    content: '';
+    position: absolute;
+    inset-inline-start: 4px;
+    inset-block-start: 1px;
+    inline-size: 4px;
+    block-size: 8px;
+    border: solid var(--accent-text);
+    border-width: 0 2px 2px 0;
+    rotate: 45deg;
+  }
+}

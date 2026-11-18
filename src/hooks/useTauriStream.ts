@@ -9,6 +9,8 @@ type UseTauriStreamOptions<T> = {
   fetch?: () => Promise<T>;
   sequence?: (value: T) => number;
   equal?: (left: T, right: T) => boolean;
+  onCommit?: (value: T) => void;
+  retryKey?: number;
   transition?: boolean;
   staleAfter?: number;
   pollInterval?: number;
@@ -18,10 +20,12 @@ type UseTauriStreamOptions<T> = {
 export type StreamStatus = { error: string | null; stale: boolean; loading: boolean };
 
 export function useTauriStream<T>(command: string, eventName: string, options: UseTauriStreamOptions<T>): [T, Dispatch<SetStateAction<T>>, StreamStatus] {
-  const { defaultValue, normalize, fetch, sequence, equal, transition = false, staleAfter, pollInterval, enabled = true, pauseWhenHidden = false } = options;
+  const { defaultValue, normalize, fetch, sequence, equal, onCommit, retryKey = 0, transition = false, staleAfter, pollInterval, enabled = true, pauseWhenHidden = false } = options;
   const [value, setValue] = useState(defaultValue);
   const [status, setStatus] = useState<StreamStatus>({ error: null, stale: false, loading: true });
   const receivedAt = useRef(performance.now());
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
   const [documentVisible, setDocumentVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
   useEffect(() => {
     if (!pauseWhenHidden) return;
@@ -44,7 +48,11 @@ export function useTauriStream<T>(command: string, eventName: string, options: U
       onError: error => setStatus(prev => ({ ...prev, error, loading: false })),
       onValue: next => {
         receivedAt.current = performance.now();
-        const update = () => { setValue(next); setStatus({ error: null, stale: false, loading: false }); };
+        const update = () => {
+          setValue(next);
+          onCommitRef.current?.(next);
+          setStatus({ error: null, stale: false, loading: false });
+        };
         if (transition) startTransition(update); else update();
       },
     });
@@ -53,6 +61,6 @@ export function useTauriStream<T>(command: string, eventName: string, options: U
       setStatus(prev => prev.stale === stale ? prev : { ...prev, stale });
     }, 1000) : undefined;
     return () => { stop(); if (timer) clearInterval(timer); };
-  }, [command, eventName, normalize, fetch, sequence, equal, transition, staleAfter, pollInterval, enabled, pauseWhenHidden, documentVisible]);
+  }, [command, eventName, normalize, fetch, sequence, equal, retryKey, transition, staleAfter, pollInterval, enabled, pauseWhenHidden, documentVisible]);
   return [value, setValue, status];
 }

@@ -1,11 +1,14 @@
 use serde::Serialize;
+#[cfg(any(feature = "desktop", test))]
 use std::{collections::HashMap, hash::Hash};
 
+#[cfg(any(feature = "desktop", test))]
 pub(crate) struct CounterAccumulator<K> {
     previous: HashMap<K, (u64, u64)>,
     total: (u64, u64),
 }
 
+#[cfg(any(feature = "desktop", test))]
 impl<K> Default for CounterAccumulator<K> {
     fn default() -> Self {
         Self {
@@ -15,6 +18,7 @@ impl<K> Default for CounterAccumulator<K> {
     }
 }
 
+#[cfg(any(feature = "desktop", test))]
 impl<K: Eq + Hash> CounterAccumulator<K> {
     pub(crate) fn update(
         &mut self,

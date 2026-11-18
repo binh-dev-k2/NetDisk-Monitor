@@ -8,15 +8,18 @@ fn validate_identity(pid: u32, created: u64, identity: &str) -> Result<(), Strin
 }
 
 #[cfg(windows)]
-pub(crate) fn terminate(pid: u32, identity: &str) -> Result<(), String> {
+mod native_windows {
+    use super::validate_identity;
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
     use windows_sys::Win32::{
         Foundation::{CloseHandle, GetLastError, FILETIME, HANDLE},
         System::Threading::{
-            GetProcessTimes, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_TERMINATE,
+            GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
         },
     };
-    struct OwnedHandle(HANDLE);
+
+    pub(super) struct OwnedHandle(pub HANDLE);
     impl Drop for OwnedHandle {
         fn drop(&mut self) {
             unsafe {
@@ -24,53 +27,90 @@ pub(crate) fn terminate(pid: u32, identity: &str) -> Result<(), String> {
             }
         }
     }
-    let handle = OwnedHandle(unsafe {
-        OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-            0,
+
+    pub(super) fn open_verified(
+        pid: u32,
+        identity: &str,
+        access: u32,
+    ) -> Result<OwnedHandle, String> {
+        let handle = OwnedHandle(unsafe { OpenProcess(access, 0, pid) });
+        if handle.0.is_null() {
+            return Err(format!("Không mở được process: {}", unsafe {
+                GetLastError()
+            }));
+        }
+        let (mut created, mut ended, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        if unsafe {
+            GetProcessTimes(
+                handle.0,
+                &raw mut created,
+                &raw mut ended,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        } == 0
+        {
+            return Err(format!("Không kiểm tra được identity: {}", unsafe {
+                GetLastError()
+            }));
+        }
+        let token = u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime);
+        validate_identity(pid, token, identity)?;
+        Ok(handle)
+    }
+
+    pub(super) fn terminate(pid: u32, identity: &str) -> Result<(), String> {
+        let handle = open_verified(
             pid,
-        )
-    });
-    if handle.0.is_null() {
-        return Err(format!("Không mở được process: {}", unsafe {
-            GetLastError()
-        }));
+            identity,
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+        )?;
+        if unsafe { TerminateProcess(handle.0, 1) } == 0 {
+            return Err(format!("Không đóng được process: {}", unsafe {
+                GetLastError()
+            }));
+        }
+        Ok(())
     }
-    let (mut created, mut ended, mut kernel, mut user) = (
-        FILETIME::default(),
-        FILETIME::default(),
-        FILETIME::default(),
-        FILETIME::default(),
-    );
-    if unsafe {
-        GetProcessTimes(
-            handle.0,
-            &raw mut created,
-            &raw mut ended,
-            &raw mut kernel,
-            &raw mut user,
-        )
-    } == 0
-    {
-        return Err(format!("Không kiểm tra được identity: {}", unsafe {
-            GetLastError()
-        }));
+
+    pub(super) fn executable_path(pid: u32, identity: &str) -> Result<PathBuf, String> {
+        let handle = open_verified(pid, identity, PROCESS_QUERY_LIMITED_INFORMATION)?;
+        let mut buf = vec![0_u16; 4096];
+        let mut len = u32::try_from(buf.len()).unwrap_or(4096);
+        if unsafe { QueryFullProcessImageNameW(handle.0, 0, buf.as_mut_ptr(), &raw mut len) } == 0
+            || len == 0
+        {
+            return Err("Không đọc được đường dẫn tệp thực thi".into());
+        }
+        let slice = &buf[..len as usize];
+        Ok(PathBuf::from(OsString::from_wide(slice)))
     }
-    let token = u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime);
-    validate_identity(pid, token, identity)?;
-    if unsafe { TerminateProcess(handle.0, 1) } == 0 {
-        return Err(format!("Không đóng được process: {}", unsafe {
-            GetLastError()
-        }));
-    }
-    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn terminate(pid: u32, identity: &str) -> Result<(), String> {
+    native_windows::terminate(pid, identity)
+}
+
+#[cfg(windows)]
+pub(crate) fn executable_path(pid: u32, identity: &str) -> Result<std::path::PathBuf, String> {
+    native_windows::executable_path(pid, identity)
 }
 
 #[cfg(not(windows))]
 pub(crate) fn terminate(pid: u32, identity: &str) -> Result<(), String> {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     let process = system
         .process(Pid::from_u32(pid))
         .ok_or("Tiến trình đã kết thúc")?;
@@ -80,6 +120,25 @@ pub(crate) fn terminate(pid: u32, identity: &str) -> Result<(), String> {
     } else {
         Err("Không có quyền đóng tiến trình".into())
     }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn executable_path(pid: u32, identity: &str) -> Result<std::path::PathBuf, String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+    );
+    let process = system
+        .process(Pid::from_u32(pid))
+        .ok_or("Tiến trình đã kết thúc")?;
+    validate_identity(pid, process.start_time(), identity)?;
+    process
+        .exe()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| "Không đọc được đường dẫn tệp thực thi".to_owned())
 }
 
 #[cfg(test)]
@@ -139,6 +198,21 @@ mod tests {
         assert!(super::validate_identity(42, 100, "42:100").is_ok());
         for stale in ["42:99", "43:100", "42", "42:100:0", "042:100"] {
             assert!(super::validate_identity(42, 100, stale).is_err());
+        }
+    }
+
+    #[test]
+    fn live_executable_path_verifies_identity_and_returns_binary() {
+        let pid = std::process::id();
+        #[cfg(windows)]
+        let token = crate::process_network::creation_token(pid).unwrap();
+        #[cfg(not(windows))]
+        let token = 0_u64;
+        if token > 0 {
+            let valid = format!("{pid}:{token}");
+            let path = super::executable_path(pid, &valid).unwrap();
+            assert!(path.is_file());
+            assert!(super::executable_path(pid, &format!("{pid}:{}", token - 1)).is_err());
         }
     }
 }

@@ -61,6 +61,10 @@ const JOURNAL_BASE: usize = LEGACY_FILE_SIZE.div_ceil(JOURNAL_STRIDE) * JOURNAL_
 const JOURNAL_SIZE: usize = 2 * JOURNAL_STRIDE;
 const JOURNAL_MAGIC: &[u8; 8] = b"NDMTXN2\0";
 const FILE_SIZE: usize = JOURNAL_BASE + JOURNAL_SIZE;
+/// Maximum retained minute buckets in the circular history store (7 days).
+pub const MINUTE_RETENTION_SLOTS: usize = MINUTE_COUNT;
+/// Maximum retained UTC day buckets in the circular history store (366 days).
+pub const DAY_RETENTION_SLOTS: usize = DAY_COUNT;
 /// Exact bounded size of the v2 history file, including its aligned redo journal.
 pub const HISTORY_FILE_BYTES: u64 = FILE_SIZE as u64;
 const MAX_FILE_SIZE: u64 = HISTORY_FILE_BYTES;
@@ -238,6 +242,43 @@ impl HistoryStore {
         self.journal = Journal {
             record: transaction,
             copy: 1 - self.journal.copy,
+        };
+        Ok(())
+    }
+
+    /// Securely wipes all minute and day buckets while keeping the v2 file bound
+    /// (`HISTORY_FILE_BYTES`) and exclusive lock intact.
+    ///
+    /// # Errors
+    /// Returns write/synchronization errors or `InvalidData` if the journal sequence
+    /// is exhausted.
+    pub fn clear(&mut self) -> io::Result<()> {
+        let base_generation = self
+            .in_flight
+            .as_ref()
+            .map_or(self.journal.record.generation, |pending| {
+                pending.generation.max(self.journal.record.generation)
+            });
+        let generation = base_generation
+            .checked_add(1)
+            .ok_or_else(|| invalid_data("History transaction sequence exhausted"))?;
+        let clean = JournalRecord {
+            generation,
+            pending: None,
+        };
+        let next_copy = 1 - self.journal.copy;
+        mirror_checkpoint(&mut self.file, &clean, next_copy)?;
+        zero_record_region(&mut self.file)?;
+        self.file.write_at(0, &header())?;
+        self.file.durable_sync()?;
+        mirror_checkpoint(&mut self.file, &clean, 1 - next_copy)?;
+        self.minutes.reset();
+        self.days.reset();
+        self.high_water = None;
+        self.in_flight = None;
+        self.journal = Journal {
+            record: clean,
+            copy: next_copy,
         };
         Ok(())
     }
@@ -588,6 +629,19 @@ fn checkpoint(io: &mut impl CheckpointIo, record: &JournalRecord, copy: u8) -> i
     mirror_checkpoint(io, record, 1 - copy)
 }
 
+fn zero_record_region(io: &mut impl CheckpointIo) -> io::Result<()> {
+    const ZEROS: [u8; 8192] = [0_u8; 8192];
+    let mut offset = u64::try_from(HEADER_SIZE).map_err(|_| invalid_data("Header offset"))?;
+    let end = u64::try_from(JOURNAL_BASE).map_err(|_| invalid_data("Journal offset"))?;
+    while offset < end {
+        let remaining = usize::try_from(end - offset).unwrap_or(ZEROS.len());
+        let chunk = remaining.min(ZEROS.len());
+        io.write_at(offset, &ZEROS[..chunk])?;
+        offset += u64::try_from(chunk).map_err(|_| invalid_data("Chunk offset"))?;
+    }
+    Ok(())
+}
+
 impl Ring {
     fn recover(raw: &[u8], count: usize, period: u64, base: usize) -> Self {
         let mut ring = Self {
@@ -735,6 +789,15 @@ impl Ring {
     fn committed(&mut self, pending: &Pending) {
         self.slots[pending.index].sequence = pending.sequence;
         self.slots[pending.index].copy = pending.copy;
+        self.dirty = None;
+    }
+
+    fn reset(&mut self) {
+        self.slots.fill(Slot {
+            record: None,
+            sequence: 0,
+            copy: 1,
+        });
         self.dirty = None;
     }
 }
@@ -1704,5 +1767,41 @@ mod tests {
         assert_eq!(days(&store)[0].bytes, [35; 4]);
         assert_eq!(minutes(&store)[0].duration_millis, 3_000);
         assert_eq!(days(&store)[0].duration_millis, 3_000);
+    }
+
+    #[test]
+    fn clear_wipes_all_buckets_preserves_exact_v2_bound_and_recovers_cleanly() {
+        let dir = Temp::new();
+        let mut store = HistoryStore::open(&dir.0).unwrap();
+        store
+            .record(1_700_000_000, 1_000, [100, 200, 300, 400])
+            .unwrap();
+        store
+            .record(1_700_000_120, 2_000, [10, 20, 30, 40])
+            .unwrap();
+        store.flush().unwrap();
+        assert_eq!(minutes(&store).len(), 2);
+        assert_eq!(days(&store).len(), 1);
+
+        store.clear().unwrap();
+        assert!(minutes(&store).is_empty());
+        assert!(days(&store).is_empty());
+        assert_eq!(store.latest_timestamp_secs(), None);
+        assert_eq!(fs::metadata(dir.file()).unwrap().len(), HISTORY_FILE_BYTES);
+        drop(store);
+
+        let mut reopened = HistoryStore::open(&dir.0).unwrap();
+        assert!(minutes(&reopened).is_empty());
+        assert!(days(&reopened).is_empty());
+        assert_eq!(reopened.latest_timestamp_secs(), None);
+
+        reopened.record(1_699_999_000, 1_500, [50; 4]).unwrap();
+        reopened.flush().unwrap();
+        drop(reopened);
+
+        let final_store = HistoryStore::open(&dir.0).unwrap();
+        assert_eq!(minutes(&final_store).len(), 1);
+        assert_eq!(days(&final_store).len(), 1);
+        assert_eq!(minutes(&final_store)[0].bytes, [50; 4]);
     }
 }

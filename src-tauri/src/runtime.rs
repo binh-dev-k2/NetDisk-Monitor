@@ -5,52 +5,163 @@ use std::{
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ShutdownRequest {
+    Ignore,
     Start,
     Wait,
+    Finalize,
     Exit,
 }
 
+#[must_use]
+pub fn should_focus_existing_instance(args: &[String]) -> bool {
+    !args.iter().any(|argument| argument == "--background")
+}
+
 #[derive(Default)]
-pub struct ShutdownGate(std::sync::atomic::AtomicU8);
+pub struct ShutdownGate(Mutex<ExitState>);
+
+#[derive(Default, PartialEq, Eq)]
+enum ExitPhase {
+    #[default]
+    Running,
+    Flushing,
+    AwaitingAcknowledgement,
+    Finalizing,
+    Ready,
+}
+
+#[derive(Clone, Copy)]
+enum ExitIntent {
+    Quit,
+    Finalize,
+}
+
+#[derive(Default)]
+struct ExitState {
+    phase: ExitPhase,
+    intent: Option<ExitIntent>,
+    ignored: u64,
+}
 impl ShutdownGate {
-    pub fn request(&self) -> ShutdownRequest {
-        use std::sync::atomic::Ordering;
-        match self
+    pub fn authorize_quit(&self) {
+        let mut state = self
             .0
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => ShutdownRequest::Start,
-            Err(2) => ShutdownRequest::Exit,
-            Err(_) => ShutdownRequest::Wait,
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A delayed ordinary Quit must not erase the internal drain/exit handshake.
+        if !matches!(state.intent, Some(ExitIntent::Finalize)) {
+            state.intent = Some(ExitIntent::Quit);
+        }
+    }
+
+    pub fn authorize_finalization(&self) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(
+            state.phase,
+            ExitPhase::AwaitingAcknowledgement | ExitPhase::Ready
+        ) {
+            state.intent = Some(ExitIntent::Finalize);
+        }
+    }
+
+    #[must_use]
+    pub fn request(&self) -> ShutdownRequest {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(intent) = state.intent.take() else {
+            state.ignored = state.ignored.saturating_add(1);
+            return ShutdownRequest::Ignore;
+        };
+        match (&state.phase, intent) {
+            (ExitPhase::Running, ExitIntent::Quit) => {
+                state.phase = ExitPhase::Flushing;
+                ShutdownRequest::Start
+            }
+            (ExitPhase::AwaitingAcknowledgement, ExitIntent::Finalize) => {
+                state.phase = ExitPhase::Finalizing;
+                ShutdownRequest::Finalize
+            }
+            (ExitPhase::Ready, ExitIntent::Finalize) => ShutdownRequest::Exit,
+            _ => ShutdownRequest::Wait,
         }
     }
     pub fn complete(&self) {
-        self.0.store(2, std::sync::atomic::Ordering::Release);
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.phase == ExitPhase::Flushing {
+            state.phase = ExitPhase::AwaitingAcknowledgement;
+            state.intent = None;
+        }
     }
+
+    pub fn finish(&self) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.phase == ExitPhase::Finalizing {
+            state.phase = ExitPhase::Ready;
+            state.intent = None;
+        }
+    }
+
+    #[must_use]
+    pub fn ignored_requests(&self) -> u64 {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ignored
+    }
+}
+
+#[derive(Default)]
+struct StopState {
+    stopped: bool,
+    wake_epoch: u64,
 }
 
 /// Shared cancellation; waits are interruptible and do not busy-poll.
 #[derive(Clone, Default)]
-pub struct StopToken(Arc<(Mutex<bool>, Condvar)>);
+pub struct StopToken(Arc<(Mutex<StopState>, Condvar)>);
 
 impl StopToken {
     pub fn stop(&self) {
-        let (stopped, wake) = &*self.0;
-        if let Ok(mut stopped) = stopped.lock() {
-            *stopped = true;
+        let (state, wake) = &*self.0;
+        if let Ok(mut guard) = state.lock() {
+            guard.stopped = true;
+            wake.notify_all();
+        }
+    }
+
+    /// Wakes a waiting worker for a one-off work request without stopping it.
+    pub fn wake(&self) {
+        let (state, wake) = &*self.0;
+        if let Ok(mut guard) = state.lock() {
+            guard.wake_epoch = guard.wake_epoch.wrapping_add(1);
             wake.notify_all();
         }
     }
 
     #[must_use]
     pub fn wait_until(&self, deadline: Instant) -> bool {
-        let (stopped, wake) = &*self.0;
-        let Ok(mut guard) = stopped.lock() else {
+        let (state, wake) = &*self.0;
+        let Ok(mut guard) = state.lock() else {
             return false;
         };
+        let initial_epoch = guard.wake_epoch;
         loop {
-            if *guard {
+            if guard.stopped {
                 return false;
+            }
+            if guard.wake_epoch != initial_epoch {
+                return true;
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return true;
@@ -123,6 +234,19 @@ mod tests {
     };
 
     #[test]
+    fn second_background_launch_does_not_request_dashboard_focus() {
+        assert!(super::should_focus_existing_instance(&[]));
+        assert!(super::should_focus_existing_instance(&["app.exe".into()]));
+        assert!(!super::should_focus_existing_instance(&[
+            "app.exe".into(),
+            "--background".into()
+        ]));
+        assert!(super::should_focus_existing_instance(&[
+            "--background.exe".into()
+        ]));
+    }
+
+    #[test]
     fn shutdown_interrupts_a_long_wait() {
         let stop = StopToken::default();
         let worker_stop = stop.clone();
@@ -130,6 +254,25 @@ mod tests {
             thread::spawn(move || worker_stop.wait_until(Instant::now() + Duration::from_secs(60)));
         stop.stop();
         assert!(!worker.join().unwrap());
+    }
+
+    #[test]
+    fn wake_interrupts_a_wait_without_stopping() {
+        let stop = StopToken::default();
+        let worker_stop = stop.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        let worker = thread::spawn(move || {
+            entered_tx.send(()).unwrap();
+            worker_stop.wait_until(Instant::now() + Duration::from_secs(60))
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        stop.wake();
+        assert!(worker.join().unwrap());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        stop.stop();
+        assert!(!stop.wait_until(Instant::now()));
     }
 
     #[test]
@@ -170,11 +313,110 @@ mod tests {
         );
     }
     #[test]
+    fn ordinary_quit_cannot_replace_flush_finalization_intent() {
+        let gate = super::ShutdownGate::default();
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Start);
+        gate.complete();
+        gate.authorize_finalization();
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Finalize);
+    }
+
+    #[test]
+    fn ordinary_quit_cannot_replace_ready_exit_intent() {
+        let gate = super::ShutdownGate::default();
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Start);
+        gate.complete();
+        gate.authorize_finalization();
+        assert_eq!(gate.request(), super::ShutdownRequest::Finalize);
+        gate.finish();
+        gate.authorize_finalization();
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Exit);
+    }
+
+    #[test]
+    fn quit_queued_before_completion_cannot_acknowledge_a_failed_flush() {
+        let gate = super::ShutdownGate::default();
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Start);
+        gate.authorize_quit();
+        gate.complete();
+        assert_eq!(gate.request(), super::ShutdownRequest::Ignore);
+    }
+
+    #[test]
+    fn implicit_exit_does_not_begin_shutdown() {
+        let gate = super::ShutdownGate::default();
+        assert_ne!(
+            gate.request(),
+            super::ShutdownRequest::Start,
+            "closing a view must not stop monitoring without explicit quit intent"
+        );
+    }
+
+    #[test]
     fn repeated_quit_cannot_bypass_an_in_progress_flush() {
         let gate = super::ShutdownGate::default();
+        gate.authorize_quit();
         assert_eq!(gate.request(), super::ShutdownRequest::Start);
+        assert_eq!(gate.request(), super::ShutdownRequest::Ignore);
+        gate.authorize_quit();
         assert_eq!(gate.request(), super::ShutdownRequest::Wait);
         gate.complete();
+        assert_eq!(gate.request(), super::ShutdownRequest::Ignore);
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Wait);
+        gate.authorize_finalization();
+        assert_eq!(gate.request(), super::ShutdownRequest::Finalize);
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Wait);
+        gate.finish();
+        assert_eq!(gate.request(), super::ShutdownRequest::Ignore);
+        gate.authorize_finalization();
         assert_eq!(gate.request(), super::ShutdownRequest::Exit);
+        assert_eq!(gate.request(), super::ShutdownRequest::Ignore);
+    }
+
+    #[test]
+    fn failed_flush_needs_explicit_acknowledgement() {
+        let gate = super::ShutdownGate::default();
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Start);
+        gate.complete();
+        assert_eq!(gate.request(), super::ShutdownRequest::Ignore);
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Wait);
+        gate.authorize_finalization();
+        assert_eq!(gate.request(), super::ShutdownRequest::Finalize);
+        gate.finish();
+        gate.authorize_finalization();
+        assert_eq!(gate.request(), super::ShutdownRequest::Exit);
+    }
+
+    #[test]
+    fn concurrent_quit_requests_never_skip_an_in_progress_flush() {
+        let gate = std::sync::Arc::new(super::ShutdownGate::default());
+        gate.authorize_quit();
+        assert_eq!(gate.request(), super::ShutdownRequest::Start);
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let gate = std::sync::Arc::clone(&gate);
+                thread::spawn(move || {
+                    gate.authorize_quit();
+                    assert!(matches!(
+                        gate.request(),
+                        super::ShutdownRequest::Wait | super::ShutdownRequest::Ignore
+                    ));
+                })
+            })
+            .collect();
+        for handle in threads {
+            handle.join().unwrap();
+        }
+        gate.complete();
+        assert_eq!(gate.request(), super::ShutdownRequest::Ignore);
     }
 }

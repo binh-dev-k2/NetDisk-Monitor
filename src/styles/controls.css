@@ -1,0 +1,132 @@
+@layer components {
+  .diagnostics, .notice {
+    padding: 9px 12px;
+    border: 1px solid color-mix(in oklab, var(--diag-border) 35%, transparent);
+    border-inline-start: 3px solid var(--diag-border);
+    background: var(--diag-bg);
+    color: var(--diag-text);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .notice {
+    border-color: color-mix(in oklab, var(--notice-border) 35%, transparent);
+    border-inline-start-color: var(--notice-border);
+    background: var(--notice-bg);
+    color: var(--notice-text);
+  }
+
+  .diagnostics-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .inline-action-btn {
+    min-block-size: 26px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .inline-action-btn:hover:not(:disabled) { background: var(--bg-card-hover); border-color: var(--accent); }
+  .inline-action-btn.danger {
+    color: var(--danger);
+    border-color: var(--danger-border);
+    background: var(--danger-soft);
+  }
+  .inline-action-btn.danger:hover:not(:disabled) {
+    background: var(--danger);
+    color: var(--accent-text);
+    border-color: var(--danger);
+  }
+  .inline-action-btn:disabled { opacity: 0.48; cursor: not-allowed; }
+
+  .icon-button-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-block-size: 30px;
+    padding: 5px 11px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .icon-button-text:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--bg-card-hover);
+    border-color: var(--border-hover);
+  }
+  .icon-button-text:disabled { opacity: 0.48; cursor: not-allowed; }
+
+  .reset-button {
+    inline-size: 100%;
+    min-block-size: 32px;
+    padding: 6px 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .reset-button.compact { inline-size: auto; min-block-size: 30px; padding: 5px 11px; font-size: var(--text-xs); }
+  .reset-button:hover:not(:disabled) {
+    background: var(--danger-soft);
+    border-color: var(--danger-border);
+    color: var(--danger);
+  }
+  .reset-button:disabled { opacity: 0.48; cursor: not-allowed; }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    min-block-size: 22px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    border: 1px solid var(--border-color);
+    white-space: nowrap;
+  }
+  .status-badge.ok { background: var(--notice-bg); color: var(--notice-text); border-color: color-mix(in oklab, var(--notice-border) 35%, transparent); }
+  .status-badge.warn { background: var(--warn-bg); color: var(--warn-text); border-color: color-mix(in oklab, var(--color-read) 40%, transparent); }
+  .status-badge.err { background: var(--diag-bg); color: var(--diag-text); border-color: color-mix(in oklab, var(--diag-border) 40%, transparent); }
+  .status-badge.muted { background: var(--bg-card); color: var(--text-secondary); }
+
+  .view-panel {
+    padding: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--bg-panel);
+    box-shadow: var(--highlight-top), var(--shadow-sm);
+    min-inline-size: 0;
+  }
+  .panel-subtitle { margin: 3px 0 0; color: var(--text-secondary); font-size: var(--text-xs); text-wrap: pretty; }
+  .empty {
+    padding: 28px 16px;
+    color: var(--text-muted);
+    text-align: center;
+    font-size: var(--text-base);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+}

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist-dev"
   },
   "app": {
@@ -14,17 +14,17 @@
     "windows": [
       {
         "label": "main",
+        "visible": false,
         "title": "NetDisk Monitor",
         "width": 980,
         "height": 640,
         "skipTaskbar": true,
         "minWidth": 420,
-        "minHeight": 500,
-        "transparent": true
+        "minHeight": 500
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

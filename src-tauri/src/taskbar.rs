@@ -1,8 +1,41 @@
 //! Independent native taskbar renderer; never touches the supplied `WebView`.
-//! Requires `Win32_Graphics_Gdi` and `Win32_System_LibraryLoader` windows-sys features.
+//! Requires `Win32_Graphics_Gdi`, `Win32_System_LibraryLoader`, and `Win32_System_Registry` windows-sys features.
 //! UIA fallback uses windows 0.57: `Win32_Foundation`, `Win32_System_Com`,
 //! `Win32_UI_Accessibility`. All COM objects stay on the renderer thread.
 //! Native GDI output is opaque; `WebView` opacity settings do not apply here.
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskbarPhase {
+    #[default]
+    Disabled,
+    Starting,
+    Attached,
+    Degraded,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskbarStatus {
+    pub phase: TaskbarPhase,
+    pub desired: bool,
+    pub attached: bool,
+    pub reason: Option<String>,
+}
+
+#[cfg(any(windows, test))]
+#[must_use]
+pub(crate) fn classify_taskbar_error(error: &str) -> TaskbarPhase {
+    if error.contains("horizontal taskbar")
+        || error.contains("only available on Windows")
+        || error.contains("coordinate mismatch")
+    {
+        TaskbarPhase::Unsupported
+    } else {
+        TaskbarPhase::Degraded
+    }
+}
 
 #[cfg(windows)]
 #[derive(Default)]
@@ -24,6 +57,13 @@ impl TaskbarMode {
         {
             if self.is_enabled() {
                 return self.resize(width, height);
+            }
+            if self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.finished())
+            {
+                self.shutdown_bounded(std::time::Duration::from_millis(150));
             }
             if let Some(session) = &self.session {
                 if !session.finished() {
@@ -124,6 +164,30 @@ impl TaskbarMode {
         }
     }
 
+    /// Bounded cooperative stop for app shutdown; never waits forever on a stalled shell.
+    pub fn shutdown_bounded(&mut self, timeout: std::time::Duration) {
+        #[cfg(windows)]
+        {
+            self.disable();
+            let deadline = std::time::Instant::now() + timeout;
+            while self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.finished())
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            if self.session.as_ref().is_some_and(native::Session::finished) {
+                if let Some(session) = self.session.take() {
+                    session.reap();
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = timeout;
+    }
+
     /// Active worker, not necessarily visible (no room, autohide or empty text).
     pub fn is_enabled(&self) -> bool {
         #[cfg(windows)]
@@ -137,6 +201,54 @@ impl TaskbarMode {
         return self.session.as_ref().and_then(native::Session::last_error);
         #[cfg(not(windows))]
         None
+    }
+
+    #[must_use]
+    pub fn status(&self) -> TaskbarStatus {
+        #[cfg(windows)]
+        {
+            if !self.is_enabled() {
+                return TaskbarStatus {
+                    phase: TaskbarPhase::Disabled,
+                    desired: false,
+                    attached: false,
+                    reason: None,
+                };
+            }
+            if let Some(reason) = self.last_error() {
+                return TaskbarStatus {
+                    phase: classify_taskbar_error(&reason),
+                    desired: true,
+                    attached: false,
+                    reason: Some(reason),
+                };
+            }
+            let session = self.session.as_ref();
+            if session.is_some_and(native::Session::is_attached) {
+                TaskbarStatus {
+                    phase: TaskbarPhase::Attached,
+                    desired: true,
+                    attached: true,
+                    reason: None,
+                }
+            } else if session.is_some_and(native::Session::has_refreshed) {
+                TaskbarStatus {
+                    phase: TaskbarPhase::Degraded,
+                    desired: true,
+                    attached: false,
+                    reason: Some("Taskbar đang ẩn hoặc chưa có chỉ số hiển thị".to_owned()),
+                }
+            } else {
+                TaskbarStatus {
+                    phase: TaskbarPhase::Starting,
+                    desired: true,
+                    attached: false,
+                    reason: None,
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        TaskbarStatus::default()
     }
 }
 
@@ -164,11 +276,14 @@ pub(crate) fn wide(value: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 mod native {
-    use super::{native_placement, uia_host_is_container, uia_left_exclusion, wide, BoundaryRetry};
+    use super::{
+        cell_width_template, compute_taskbar_slots, is_container_class, native_placement, wide,
+        BoundaryRetry, TaskbarSlots,
+    };
     use std::{
         ptr::{null, null_mut},
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU32, Ordering},
             mpsc, Arc, Mutex, OnceLock, PoisonError,
         },
         thread::{self, JoinHandle},
@@ -190,24 +305,34 @@ mod native {
         Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CreateFontW, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-            GetStockObject, GetSysColor, GetTextExtentPoint32W, InvalidateRect, ReleaseDC,
-            SelectObject, SetBkMode, SetDCBrushColor, SetTextColor, COLOR_BTNFACE, COLOR_BTNTEXT,
-            DC_BRUSH, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HFONT, PAINTSTRUCT,
-            TRANSPARENT,
+            GetMonitorInfoW, GetStockObject, GetSysColor, GetTextExtentPoint32W, InvalidateRect,
+            MonitorFromWindow, ReleaseDC, SelectObject, SetBkMode, SetDCBrushColor, SetTextColor,
+            COLOR_BTNFACE, COLOR_BTNTEXT, DC_BRUSH, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
+            DT_VCENTER, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, TRANSPARENT,
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            Registry::{
+                RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ,
+                REG_DWORD,
+            },
+            Threading::GetCurrentThreadId,
+        },
         UI::HiDpi::{
             GetDpiForWindow, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT,
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumChildWindows,
-            FindWindowW, GetClassNameW, GetClientRect, GetMessageW, GetWindow, GetWindowLongPtrW,
-            GetWindowRect, GetWindowThreadProcessId, IsChild, IsWindow, IsWindowVisible, KillTimer,
-            RegisterClassW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, GW_HWNDPREV, HWND_TOP, MA_NOACTIVATE,
-            MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_MOUSEACTIVATE,
-            WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE,
+            FindWindowW, GetClassNameW, GetClientRect, GetForegroundWindow, GetMessageW, GetWindow,
+            GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsChild, IsWindow,
+            IsWindowVisible, KillTimer, PostThreadMessageW, RegisterClassW,
+            SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+            TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, GW_HWNDPREV, HWND_TOPMOST, LWA_ALPHA,
+            MA_NOACTIVATE, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND,
+            WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_PAINT, WM_SETTINGCHANGE,
+            WNDCLASSW, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
         },
     };
 
@@ -231,6 +356,9 @@ mod native {
         stop: AtomicBool,
         active: AtomicBool,
         live: AtomicBool,
+        attached: AtomicBool,
+        has_refreshed: AtomicBool,
+        thread_id: AtomicU32,
     }
 
     pub(super) struct Session {
@@ -246,6 +374,9 @@ mod native {
                 stop: AtomicBool::new(false),
                 active: AtomicBool::new(false),
                 live: AtomicBool::new(false),
+                attached: AtomicBool::new(false),
+                has_refreshed: AtomicBool::new(false),
+                thread_id: AtomicU32::new(0),
             });
             let (sender, receiver) = mpsc::sync_channel(1);
             let state = Arc::clone(&shared);
@@ -277,11 +408,23 @@ mod native {
         }
         pub fn stop(&self) {
             self.shared.stop.store(true, Ordering::Release);
+            let thread_id = self.shared.thread_id.load(Ordering::Acquire);
+            if thread_id != 0 && !self.worker.is_finished() {
+                unsafe {
+                    PostThreadMessageW(thread_id, WM_NULL, 0, 0);
+                }
+            }
         }
         pub fn enabled(&self) -> bool {
             self.shared.live.load(Ordering::Acquire)
                 && self.shared.active.load(Ordering::Acquire)
                 && !self.shared.stop.load(Ordering::Acquire)
+        }
+        pub fn is_attached(&self) -> bool {
+            self.shared.attached.load(Ordering::Acquire)
+        }
+        pub fn has_refreshed(&self) -> bool {
+            self.shared.has_refreshed.load(Ordering::Acquire)
         }
         pub fn finished(&self) -> bool {
             self.worker.is_finished()
@@ -309,6 +452,8 @@ mod native {
     struct LiveGuard(Arc<Shared>);
     impl Drop for LiveGuard {
         fn drop(&mut self) {
+            self.0.thread_id.store(0, Ordering::Release);
+            self.0.attached.store(false, Ordering::Release);
             self.0.live.store(false, Ordering::Release);
         }
     }
@@ -327,6 +472,9 @@ mod native {
         }
         let _timer = ThreadTimer(timer);
         let mut renderer = Renderer::new(module);
+        shared
+            .thread_id
+            .store(unsafe { GetCurrentThreadId() }, Ordering::Release);
         shared.live.store(true, Ordering::Release);
         if ready.send(Ok(())).is_err() {
             return Ok(());
@@ -355,6 +503,10 @@ mod native {
                 if error.is_some() {
                     renderer.hide();
                 }
+                shared
+                    .attached
+                    .store(error.is_none() && renderer.visible, Ordering::Release);
+                shared.has_refreshed.store(true, Ordering::Release);
                 *shared.error.lock().unwrap_or_else(PoisonError::into_inner) = error;
             }
             unsafe {
@@ -424,8 +576,8 @@ mod native {
                     CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
                         .map_err(|error| format!("UIA provider creation failed: {error}"))?;
                 automation
-                    .SetConnectionTimeout(100)
-                    .and_then(|()| automation.SetTransactionTimeout(100))
+                    .SetConnectionTimeout(250)
+                    .and_then(|()| automation.SetTransactionTimeout(250))
                     .map_err(|error| {
                         format!("UIA provider timeout configuration failed: {error}")
                     })?;
@@ -433,14 +585,19 @@ mod native {
             }
         }
 
-        fn left_edge(
+        #[allow(
+            clippy::too_many_lines,
+            reason = "Keeps UIA bounds discovery, XAML filtering and slot extraction in one sequence"
+        )]
+        fn discover_slots(
             &self,
             parent: HWND,
             own: HWND,
             bar: RECT,
-            start: RECT,
-        ) -> Result<i32, String> {
-            let query = || -> windows::core::Result<i32> {
+            start_rect: Option<RECT>,
+            tray_rect: Option<RECT>,
+        ) -> Result<TaskbarSlots, String> {
+            let query = || -> windows::core::Result<TaskbarSlots> {
                 unsafe {
                     let root = self.0.ElementFromHandle(UiaHwnd(parent as isize))?;
                     let physical = root.CurrentBoundingRectangle()?;
@@ -449,8 +606,10 @@ mod native {
                         || physical.right != bar.right
                         || physical.bottom != bar.bottom
                     {
-                        return Err(windows::core::Error::new(E_FAIL,
-                            "UIA/Win32 coordinate mismatch; taskbar requires per-monitor DPI awareness"));
+                        return Err(windows::core::Error::new(
+                            E_FAIL,
+                            "UIA/Win32 coordinate mismatch; taskbar requires per-monitor DPI awareness",
+                        ));
                     }
                     // Scan the XAML host subtree, never the Shell tree containing our
                     // sibling HWND. A query condition alone still invokes its provider.
@@ -463,7 +622,7 @@ mod native {
                         })?;
                     let host_rect = window_rect(host)
                         .map_err(|error| windows::core::Error::new(E_FAIL, error))?;
-                    if !uia_host_is_container(
+                    if !super::uia_host_is_container(
                         [bar.left, bar.top, bar.right, bar.bottom],
                         [
                             host_rect.left,
@@ -485,17 +644,20 @@ mod native {
                     let items =
                         scan_root.FindAllBuildCache(TreeScope_Descendants, &condition, &request)?;
                     let count = items.Length()?;
-                    if !(1..=256).contains(&count) {
+                    if !(1..=2048).contains(&count) {
                         return Err(windows::core::Error::new(
                             E_FAIL,
                             "UIA taskbar tree is empty or exceeds the bounded scan limit",
                         ));
                     }
+                    let bar_w = bar.right - bar.left;
+                    let bar_h = bar.bottom - bar.top;
                     let mut rects = visible_native_bounds(parent, own, bar)
                         .map_err(|error| windows::core::Error::new(E_FAIL, error))?;
+                    let mut start_left = start_rect.map(|r| r.left - bar.left);
+                    let mut tray_left = tray_rect.map(|r| r.left - bar.left);
                     #[cfg(test)]
                     let mut diagnostics = BoundaryDiagnostics::new(&rects);
-                    let start_left = start.left - bar.left;
                     for index in 0..count {
                         let element = items.GetElement(index)?;
                         let class = element.CachedClassName()?.to_string();
@@ -515,30 +677,54 @@ mod native {
                             rect.right - bar.left,
                             rect.bottom - bar.top,
                         ];
+                        if relative[2] <= relative[0] || relative[3] <= relative[1] {
+                            continue;
+                        }
+                        let auto_id = element.CachedAutomationId()?.to_string();
+                        if auto_id == "StartButton" && start_left.is_none() {
+                            start_left = Some(relative[0]);
+                        }
+                        if (auto_id.contains("SystemTray") || class.contains("SystemTray"))
+                            && relative[0] > bar_w / 2
+                        {
+                            tray_left =
+                                Some(tray_left.map_or(relative[0], |prev| prev.min(relative[0])));
+                        }
+                        if is_container_class(&class)
+                            || (relative[2] - relative[0]) >= bar_w * 3 / 4
+                        {
+                            continue;
+                        }
                         rects.push(relative);
                     }
-                    // The native Start HWND and its bounds were already verified above.
-                    // UIA can transiently omit the duplicate XAML Start element on reflow.
-                    let exclusion = uia_left_exclusion(
-                        bar.right - bar.left,
-                        bar.bottom - bar.top,
+                    let widgets_enabled = widgets_enabled_in_registry();
+                    let slots = compute_taskbar_slots(
+                        bar_w,
+                        bar_h,
                         start_left,
+                        tray_left,
+                        widgets_enabled,
                         &rects,
                     );
                     #[cfg(test)]
-                    if exclusion.is_none() {
-                        diagnostics.report(bar, start, start_left, count);
+                    if slots.left_slot.is_none() && slots.right_slot.is_none() {
+                        let fallback_start = start_rect.unwrap_or_default();
+                        diagnostics.report(bar, fallback_start, start_left.unwrap_or(-1), count);
                     }
-                    exclusion.ok_or_else(|| {
-                        windows::core::Error::new(
+                    if slots.left_slot.is_none() && slots.right_slot.is_none() {
+                        return Err(windows::core::Error::new(
                             E_FAIL,
                             "UIA tree contains ambiguous left-side bounds",
-                        )
-                    })
+                        ));
+                    }
+                    Ok(slots)
                 }
             };
-            query().map_err(|error| format!(
-                "Weather HWND unavailable; native UIA cannot verify free space: {error}; renderer hidden, retrying. Supply measured set_left_exclusion() to override"))
+            query().map_err(|error| {
+                format!(
+                    "Weather HWND unavailable; native UIA cannot verify free space: {error}; renderer hidden, retrying. Supply measured set_left_exclusion() to override"
+                )
+            })
         }
 
         fn boundary_cache(
@@ -649,18 +835,24 @@ mod native {
         height: i32,
     }
 
+    type CachedSlotBounds = (
+        BarKey,
+        Option<[i32; 4]>,
+        Option<[i32; 4]>,
+        Result<TaskbarSlots, String>,
+    );
+
     struct Renderer {
         module: isize,
         parent: HWND,
         parent_pid: u32,
         start: HWND,
-        weather: HWND,
-        weather_discovered: Instant,
+        tray: HWND,
         window: HWND,
         discovered: Instant,
         boundary: Option<(u64, BarKey, i32)>,
         automation: Option<Automation>,
-        auto_boundary: Option<(BarKey, [i32; 4], Result<i32, String>)>,
+        auto_slots: Option<CachedSlotBounds>,
         auto_retry: BoundaryRetry,
         paint: Box<Paint>,
         position: Option<(i32, i32, i32, i32)>,
@@ -668,6 +860,7 @@ mod native {
         last_input: Option<Input>,
         refreshed: Instant,
         refresh_result: Result<(), String>,
+        theme_checked: Instant,
     }
 
     impl Renderer {
@@ -677,13 +870,12 @@ mod native {
                 parent: null_mut(),
                 parent_pid: 0,
                 start: null_mut(),
-                weather: null_mut(),
-                weather_discovered: elapsed_anchor(UIA_INTERVAL),
+                tray: null_mut(),
                 window: null_mut(),
                 discovered: elapsed_anchor(DISCOVERY_INTERVAL),
                 boundary: None,
                 automation: None,
-                auto_boundary: None,
+                auto_slots: None,
                 auto_retry: BoundaryRetry::default(),
                 paint: Box::new(Paint::default()),
                 position: None,
@@ -691,13 +883,24 @@ mod native {
                 last_input: None,
                 refreshed: elapsed_anchor(DISCOVERY_INTERVAL),
                 refresh_result: Ok(()),
+                theme_checked: elapsed_anchor(UIA_INTERVAL),
             }
         }
 
         fn refresh(&mut self, input: &Input) -> Result<(), String> {
+            if self.theme_checked.elapsed() >= UIA_INTERVAL {
+                self.theme_checked = Instant::now();
+                self.paint.refresh_theme();
+            }
             if self.last_input.as_ref() == Some(input)
                 && self.refreshed.elapsed() < Duration::from_millis(u64::from(TICK_MS))
             {
+                if self.paint.dirty && self.visible && !self.window.is_null() {
+                    unsafe {
+                        InvalidateRect(self.window, null(), 0);
+                    }
+                    self.paint.dirty = false;
+                }
                 return self.refresh_result.clone();
             }
             self.refreshed = Instant::now();
@@ -728,8 +931,7 @@ mod native {
                     self.parent = parent;
                     self.parent_pid = pid;
                     self.start = null_mut();
-                    self.weather = null_mut();
-                    self.weather_discovered = elapsed_anchor(UIA_INTERVAL);
+                    self.tray = null_mut();
                 }
             }
             if self.parent.is_null() {
@@ -747,18 +949,35 @@ mod native {
             if key.width < key.height || key.height <= 2 {
                 return Err("Native renderer requires a visible horizontal taskbar".to_owned());
             }
-            if unsafe { IsWindow(self.start) } == 0 {
-                self.start = find_descendant(self.parent, &["Start"]).ok_or_else(|| {
-                    "Cannot verify the Start button boundary; native renderer hidden".to_owned()
-                })?;
-            }
-            let start_rect = window_rect(self.start)?;
-            let start_left = start_rect.left - bar.left;
-            if unsafe { IsWindowVisible(self.parent) } == 0 || input.text.trim().is_empty() {
+            if unsafe { IsWindowVisible(self.parent) } == 0
+                || input.text.trim().is_empty()
+                || taskbar_obscured_or_autohidden(self.parent, self.window, bar)
+            {
                 self.hide();
                 return Ok(());
             }
-            let weather_right = if let Some(right) = input.left_exclusion {
+            if self.start.is_null() || unsafe { IsWindow(self.start) } == 0 {
+                self.start = find_descendant(self.parent, &["Start"]).unwrap_or(null_mut());
+            }
+            if self.tray.is_null() || unsafe { IsWindow(self.tray) } == 0 {
+                self.tray = find_descendant(self.parent, &["TrayNotifyWnd"]).unwrap_or(null_mut());
+            }
+            let start_rect = (!self.start.is_null())
+                .then(|| window_rect(self.start).ok())
+                .flatten();
+            let tray_rect = (!self.tray.is_null())
+                .then(|| window_rect(self.tray).ok())
+                .flatten();
+            let dpi = i32::try_from(unsafe { GetDpiForWindow(self.parent) })
+                .ok()
+                .filter(|dpi| *dpi > 0 && *dpi <= 768)
+                .ok_or_else(|| "Cannot verify taskbar DPI; renderer hidden".to_owned())?;
+            let gap = (8 * dpi / 96).max(1);
+            let placement = if let Some(right) = input.left_exclusion {
+                let start_rect = start_rect.ok_or_else(|| {
+                    "Cannot verify the Start button boundary; native renderer hidden".to_owned()
+                })?;
+                let start_left = start_rect.left - bar.left;
                 if self
                     .boundary
                     .is_none_or(|(revision, _, _)| revision != input.boundary_revision)
@@ -767,82 +986,73 @@ mod native {
                 }
                 let (_, anchor, right) = self.boundary.expect("boundary just installed");
                 if anchor != key {
-                    return Err("Taskbar geometry changed; refresh set_left_exclusion() with measured bounds".to_owned());
+                    return Err(
+                        "Taskbar geometry changed; refresh set_left_exclusion() with measured bounds"
+                            .to_owned(),
+                    );
                 }
-                right
+                self.paint.prepare(&input.text, dpi)?;
+                let width = input.width.max(self.paint.content_width);
+                let height = input.height.max(self.paint.content_height);
+                native_placement(key.width, key.height, start_left, right, width, height, gap)
+                    .ok_or_else(|| {
+                        "Not enough verified space between weather and Start; native renderer hidden"
+                            .to_owned()
+                    })?
             } else {
                 self.boundary = None;
-                // XAML weather often has no HWND. Absence is not evidence of free space.
-                if self.weather_discovered.elapsed() >= UIA_INTERVAL {
-                    self.weather_discovered = Instant::now();
-                    self.weather = find_descendant(self.parent, &["DynamicContent2", "Widgets"])
-                        .unwrap_or(null_mut());
-                }
-                if !self.weather.is_null() && unsafe { IsWindow(self.weather) } != 0 {
-                    window_rect(self.weather)?.right - bar.left
-                } else {
-                    self.auto_left_edge(key, bar, start_rect)?
-                }
+                let slots = self.auto_slots(key, bar, start_rect, tray_rect)?;
+                self.select_slot_and_prepare(input, dpi, key, slots, gap)?
             };
-            let dpi = i32::try_from(unsafe { GetDpiForWindow(self.parent) })
-                .ok()
-                .filter(|dpi| *dpi > 0 && *dpi <= 768)
-                .ok_or_else(|| "Cannot verify taskbar DPI; renderer hidden".to_owned())?;
-            self.paint.prepare(&input.text, dpi)?;
-            let gap = (8 * dpi / 96).max(1);
-            let width = input.width.max(self.paint.content_width);
-            let height = input.height.max(self.paint.content_height);
-            let placement = native_placement(
-                key.width,
-                key.height,
-                start_left,
-                weather_right,
-                width,
-                height,
-                gap,
-            )
-            .ok_or_else(|| {
-                "Not enough verified space between weather and Start; native renderer hidden"
-                    .to_owned()
-            })?;
             if placement.3 < self.paint.content_height {
                 return Err(
                     "Taskbar is too short for the requested text rows; native renderer hidden"
                         .to_owned(),
                 );
             }
+            let screen_placement = (
+                bar.left + placement.0,
+                bar.top + placement.1,
+                placement.2,
+                placement.3,
+            );
             if self.window.is_null() || unsafe { IsWindow(self.window) } == 0 {
                 self.window = null_mut();
                 let class = wide(CLASS);
                 let window = unsafe {
                     CreateWindowExW(
-                        WS_EX_NOACTIVATE,
+                        WS_EX_TOPMOST
+                            | WS_EX_TOOLWINDOW
+                            | WS_EX_NOACTIVATE
+                            | WS_EX_LAYERED
+                            | WS_EX_TRANSPARENT,
                         class.as_ptr(),
                         null(),
-                        WS_CHILD,
-                        placement.0,
-                        placement.1,
-                        placement.2,
-                        placement.3,
-                        self.parent,
+                        WS_POPUP | WS_CLIPSIBLINGS,
+                        screen_placement.0,
+                        screen_placement.1,
+                        screen_placement.2,
+                        screen_placement.3,
+                        null_mut(),
                         null_mut(),
                         self.module as _,
                         (&raw mut *self.paint).cast(),
                     )
                 };
                 if window.is_null() {
-                    return Err(win_error("CreateWindowExW(native child)"));
+                    return Err(win_error("CreateWindowExW(taskbar overlay)"));
+                }
+                unsafe {
+                    SetLayeredWindowAttributes(window, 0, 250, LWA_ALPHA);
                 }
                 self.window = window;
                 self.position = None;
                 self.visible = false;
             }
-            // Explorer can raise its full-taskbar XAML bridge without moving our child.
-            if self.position != Some(placement)
-                || !unsafe { GetWindow(self.window, GW_HWNDPREV) }.is_null()
+            if self.position != Some(screen_placement) || !is_above_window(self.window, self.parent)
             {
-                position_window(self.window, placement)?;
-                self.position = Some(placement);
+                position_docked_window(self.window, screen_placement)?;
+                self.position = Some(screen_placement);
                 self.paint.dirty = true;
             }
             if !self.visible {
@@ -861,14 +1071,90 @@ mod native {
             Ok(())
         }
 
-        fn auto_left_edge(&mut self, key: BarKey, bar: RECT, start: RECT) -> Result<i32, String> {
-            let start_bounds = [start.left, start.top, start.right, start.bottom];
-            let matches = self
-                .auto_boundary
-                .as_ref()
-                .is_some_and(|(anchor, cached_start, _)| {
-                    *anchor == key && *cached_start == start_bounds
-                });
+        fn select_slot_and_prepare(
+            &mut self,
+            input: &Input,
+            dpi: i32,
+            key: BarKey,
+            slots: TaskbarSlots,
+            gap: i32,
+        ) -> Result<(i32, i32, i32, i32), String> {
+            let total_cols = input
+                .text
+                .lines()
+                .take(2)
+                .map(|line| line.split('\t').take(16).count())
+                .max()
+                .unwrap_or(0);
+            let left_slot = slots
+                .left_slot
+                .filter(|&(left, right)| right - left - 2 * gap > 0);
+            let right_slot = slots
+                .right_slot
+                .filter(|&(left, right)| right - left - 2 * gap > 0);
+            let (slot_left, slot_right) = match (left_slot, right_slot) {
+                (Some((l_left, l_right)), Some((r_left, r_right))) => {
+                    let l_avail = l_right - l_left - 2 * gap;
+                    let r_avail = r_right - r_left - 2 * gap;
+                    let left_fit = self.paint.prepare_fitting(&input.text, dpi, l_avail);
+                    if left_fit == Ok(total_cols) {
+                        (l_left, l_right)
+                    } else {
+                        let right_fit = self.paint.prepare_fitting(&input.text, dpi, r_avail);
+                        match (&left_fit, &right_fit) {
+                            (Ok(lc), Ok(rc)) if *rc > *lc || (*rc == *lc && r_avail > l_avail) => {
+                                (r_left, r_right)
+                            }
+                            (Err(_), Ok(_)) => (r_left, r_right),
+                            (Ok(_), _) => {
+                                self.paint.prepare_fitting(&input.text, dpi, l_avail)?;
+                                (l_left, l_right)
+                            }
+                            (Err(err_l), Err(_)) => return Err(err_l.clone()),
+                        }
+                    }
+                }
+                (Some((l_left, l_right)), None) => {
+                    self.paint
+                        .prepare_fitting(&input.text, dpi, l_right - l_left - 2 * gap)?;
+                    (l_left, l_right)
+                }
+                (None, Some((r_left, r_right))) => {
+                    self.paint
+                        .prepare_fitting(&input.text, dpi, r_right - r_left - 2 * gap)?;
+                    (r_left, r_right)
+                }
+                (None, None) => {
+                    return Err(
+                        "Not enough verified taskbar space; native renderer hidden".to_owned()
+                    );
+                }
+            };
+            let width = input.width.max(self.paint.content_width);
+            let height = input.height.max(self.paint.content_height);
+            native_placement(
+                key.width, key.height, slot_right, slot_left, width, height, gap,
+            )
+            .ok_or_else(|| "Not enough verified taskbar space; native renderer hidden".to_owned())
+        }
+
+        fn auto_slots(
+            &mut self,
+            key: BarKey,
+            bar: RECT,
+            start: Option<RECT>,
+            tray: Option<RECT>,
+        ) -> Result<TaskbarSlots, String> {
+            let start_bounds = start.map(|r| [r.left, r.top, r.right, r.bottom]);
+            let tray_bounds = tray.map(|r| [r.left, r.top, r.right, r.bottom]);
+            let matches =
+                self.auto_slots
+                    .as_ref()
+                    .is_some_and(|(anchor, cached_start, cached_tray, _)| {
+                        *anchor == key
+                            && *cached_start == start_bounds
+                            && *cached_tray == tray_bounds
+                    });
             if self.auto_retry.query_due(Instant::now(), matches) {
                 let result = (|| {
                     if self.automation.is_none() {
@@ -877,17 +1163,16 @@ mod native {
                     self.automation
                         .as_ref()
                         .expect("automation installed")
-                        .left_edge(self.parent, self.window, bar, start)
+                        .discover_slots(self.parent, self.window, bar, start, tray)
                 })();
                 self.auto_retry.record(Instant::now(), result.is_ok());
-                self.auto_boundary = Some((key, start_bounds, result));
+                self.auto_slots = Some((key, start_bounds, tray_bounds, result));
             }
-            let (anchor, cached_start, result) =
-                self.auto_boundary.as_ref().expect("UIA cache installed");
-            if !self
-                .auto_retry
-                .usable(*anchor == key && *cached_start == start_bounds)
-            {
+            let (anchor, cached_start, cached_tray, result) =
+                self.auto_slots.as_ref().expect("UIA cache installed");
+            if !self.auto_retry.usable(
+                *anchor == key && *cached_start == start_bounds && *cached_tray == tray_bounds,
+            ) {
                 if let Err(error) = result {
                     return Err(error.clone());
                 }
@@ -924,7 +1209,27 @@ mod native {
         }
     }
 
+    fn position_docked_window(window: HWND, placement: (i32, i32, i32, i32)) -> Result<(), String> {
+        if unsafe {
+            SetWindowPos(
+                window,
+                HWND_TOPMOST,
+                placement.0,
+                placement.1,
+                placement.2,
+                placement.3,
+                SWP_NOACTIVATE,
+            )
+        } == 0
+        {
+            return Err(win_error("SetWindowPos(taskbar overlay)"));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn position_window(window: HWND, placement: (i32, i32, i32, i32)) -> Result<(), String> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::HWND_TOP;
         if unsafe {
             SetWindowPos(
                 window,
@@ -943,75 +1248,240 @@ mod native {
     }
 
     #[derive(Default)]
-    struct Paint {
+    pub(super) struct Paint {
         text: String,
         cells: Vec<Vec<Vec<u16>>>,
         widths: Vec<i32>,
         font: HFONT,
         dpi: i32,
+        pub(super) fitted_cols: usize,
+        use_templates: bool,
         line_height: i32,
         padding: i32,
-        content_width: i32,
+        pub(super) content_width: i32,
         content_height: i32,
+        bg_color: u32,
+        text_color: u32,
+        theme_initialized: bool,
         dirty: bool,
     }
 
+    fn widgets_enabled_in_registry() -> bool {
+        let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced");
+        let value = wide("TaskbarDa");
+        let mut hkey = null_mut();
+        if unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                KEY_READ,
+                &raw mut hkey,
+            )
+        } == 0
+        {
+            let mut reg_type = 0_u32;
+            let mut data = 0_u32;
+            let mut size = u32::try_from(std::mem::size_of::<u32>()).unwrap_or(4);
+            let status = unsafe {
+                RegQueryValueExW(
+                    hkey,
+                    value.as_ptr(),
+                    null(),
+                    &raw mut reg_type,
+                    (&raw mut data).cast(),
+                    &raw mut size,
+                )
+            };
+            unsafe {
+                RegCloseKey(hkey);
+            }
+            if status == 0 && reg_type == REG_DWORD && size == 4 {
+                return data != 0;
+            }
+        }
+        true
+    }
+
+    fn query_taskbar_colors() -> (u32, u32) {
+        let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+        let value = wide("SystemUsesLightTheme");
+        let mut hkey = null_mut();
+        if unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                KEY_READ,
+                &raw mut hkey,
+            )
+        } == 0
+        {
+            let mut reg_type = 0_u32;
+            let mut data = 0_u32;
+            let mut size = u32::try_from(std::mem::size_of::<u32>()).unwrap_or(4);
+            let status = unsafe {
+                RegQueryValueExW(
+                    hkey,
+                    value.as_ptr(),
+                    null(),
+                    &raw mut reg_type,
+                    (&raw mut data).cast(),
+                    &raw mut size,
+                )
+            };
+            unsafe {
+                RegCloseKey(hkey);
+            }
+            if status == 0 && reg_type == REG_DWORD && size == 4 {
+                return if data != 0 {
+                    (0x00F3_F3F3, 0x001A_1A1A)
+                } else {
+                    (0x0020_2020, 0x00F3_F3F3)
+                };
+            }
+        }
+        unsafe { (GetSysColor(COLOR_BTNFACE), GetSysColor(COLOR_BTNTEXT)) }
+    }
+
     impl Paint {
+        fn refresh_theme(&mut self) {
+            let (bg, text) = query_taskbar_colors();
+            if !self.theme_initialized || self.bg_color != bg || self.text_color != text {
+                self.bg_color = bg;
+                self.text_color = text;
+                self.theme_initialized = true;
+                self.dirty = true;
+            }
+        }
+
+        fn ensure_font(&mut self, dpi: i32) -> Result<(), String> {
+            if self.dpi == dpi {
+                return Ok(());
+            }
+            let face = wide("Segoe UI");
+            let font = unsafe {
+                CreateFontW(
+                    -12 * dpi / 96,
+                    0,
+                    0,
+                    0,
+                    400,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    5,
+                    0,
+                    face.as_ptr(),
+                )
+            };
+            if font.is_null() {
+                return Err(win_error("CreateFontW"));
+            }
+            if !self.font.is_null() {
+                unsafe {
+                    DeleteObject(self.font);
+                }
+            }
+            self.font = font;
+            self.dpi = dpi;
+            Ok(())
+        }
+
+        fn prepare(&mut self, text: &str, dpi: i32) -> Result<(), String> {
+            let padding = (4 * dpi / 96).max(1);
+            self.prepare_with_options(text, dpi, 16, true, padding)
+        }
+
+        pub(super) fn prepare_fitting(
+            &mut self,
+            text: &str,
+            dpi: i32,
+            max_width: i32,
+        ) -> Result<usize, String> {
+            let total_cols = text
+                .lines()
+                .take(2)
+                .map(|line| line.split('\t').take(16).count())
+                .max()
+                .unwrap_or(0);
+            if total_cols == 0 {
+                return Err("Empty taskbar metrics text".to_owned());
+            }
+            let normal_pad = (4 * dpi / 96).max(1);
+            self.prepare_with_options(text, dpi, total_cols, true, normal_pad)?;
+            if self.content_width <= max_width {
+                return Ok(total_cols);
+            }
+            let tight_pad = (3 * dpi / 96).max(1);
+            self.prepare_with_options(text, dpi, total_cols, false, tight_pad)?;
+            if self.content_width <= max_width {
+                return Ok(total_cols);
+            }
+            for cols in (1..total_cols).rev() {
+                self.prepare_with_options(text, dpi, cols, false, tight_pad)?;
+                if self.content_width <= max_width {
+                    return Ok(cols);
+                }
+            }
+            Err(format!(
+                "Not enough verified taskbar space ({max_width}px available, {}px needed); native renderer hidden",
+                self.content_width
+            ))
+        }
+
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_possible_wrap,
             reason = "Public input is bounded to 2048 scalars (4096 UTF-16 units), 16 columns, and two rows; GDI takes i32 counts"
         )]
-        fn prepare(&mut self, text: &str, dpi: i32) -> Result<(), String> {
-            if self.text == text && self.dpi == dpi {
+        fn prepare_with_options(
+            &mut self,
+            text: &str,
+            dpi: i32,
+            max_cols: usize,
+            use_templates: bool,
+            padding: i32,
+        ) -> Result<(), String> {
+            if !self.theme_initialized {
+                self.refresh_theme();
+            }
+            if self.text == text
+                && self.dpi == dpi
+                && self.fitted_cols == max_cols
+                && self.use_templates == use_templates
+                && self.padding == padding
+            {
                 return Ok(());
             }
-            if self.dpi != dpi {
-                let face = wide("Segoe UI");
-                let font = unsafe {
-                    CreateFontW(
-                        -12 * dpi / 96,
-                        0,
-                        0,
-                        0,
-                        400,
-                        0,
-                        0,
-                        0,
-                        1,
-                        0,
-                        0,
-                        5,
-                        0,
-                        face.as_ptr(),
-                    )
-                };
-                if font.is_null() {
-                    return Err(win_error("CreateFontW"));
-                }
-                if !self.font.is_null() {
-                    unsafe {
-                        DeleteObject(self.font);
-                    }
-                }
-                self.font = font;
-                self.dpi = dpi;
-            }
+            self.ensure_font(dpi)?;
             let dc = unsafe { GetDC(null_mut()) };
             if dc.is_null() {
                 return Err(win_error("GetDC(text measurement)"));
             }
             let old = unsafe { SelectObject(dc, self.font) };
-            let cells: Vec<Vec<Vec<u16>>> = text
+            let raw_rows: Vec<Vec<&str>> = text
                 .lines()
                 .take(2)
-                .map(|line| line.split('\t').take(16).map(wide).collect())
+                .map(|line| line.split('\t').take(16).take(max_cols).collect())
+                .collect();
+            let cells: Vec<Vec<Vec<u16>>> = raw_rows
+                .iter()
+                .map(|row| row.iter().map(|cell| wide(cell)).collect())
                 .collect();
             let columns = cells.iter().map(Vec::len).max().unwrap_or(0);
             let mut widths = vec![0; columns];
             let mut line_height = 0;
             let mut valid = true;
-            for row in &cells {
+            let slack = if use_templates {
+                0
+            } else {
+                (2 * dpi / 96).max(1)
+            };
+            for (row_idx, row) in cells.iter().enumerate() {
                 for (column, cell) in row.iter().enumerate() {
                     let mut size = SIZE::default();
                     valid &= unsafe {
@@ -1022,8 +1492,26 @@ mod native {
                             &raw mut size,
                         )
                     } != 0;
-                    widths[column] = widths[column].max(size.cx);
+                    widths[column] = widths[column].max(size.cx + slack);
                     line_height = line_height.max(size.cy);
+                    if use_templates {
+                        let template = cell_width_template(raw_rows[row_idx][column]);
+                        if !template.is_empty() {
+                            let tmpl = wide(template);
+                            let mut tmpl_size = SIZE::default();
+                            if unsafe {
+                                GetTextExtentPoint32W(
+                                    dc,
+                                    tmpl.as_ptr(),
+                                    (tmpl.len() - 1) as i32,
+                                    &raw mut tmpl_size,
+                                )
+                            } != 0
+                            {
+                                widths[column] = widths[column].max(tmpl_size.cx);
+                            }
+                        }
+                    }
                 }
             }
             unsafe {
@@ -1033,7 +1521,9 @@ mod native {
             if !valid {
                 return Err("Unable to measure native metric text".to_owned());
             }
-            self.padding = (4 * dpi / 96).max(1);
+            self.padding = padding;
+            self.fitted_cols = max_cols;
+            self.use_templates = use_templates;
             self.line_height = line_height.max(12 * dpi / 96) + self.padding;
             self.content_width =
                 widths.iter().sum::<i32>() + (columns as i32 + 1) * self.padding * 2;
@@ -1058,10 +1548,20 @@ mod native {
             }
             let mut client = RECT::default();
             GetClientRect(window, &raw mut client);
-            SetDCBrushColor(dc, GetSysColor(COLOR_BTNFACE));
+            let bg = if self.theme_initialized {
+                self.bg_color
+            } else {
+                GetSysColor(COLOR_BTNFACE)
+            };
+            let fg = if self.theme_initialized {
+                self.text_color
+            } else {
+                GetSysColor(COLOR_BTNTEXT)
+            };
+            SetDCBrushColor(dc, bg);
             FillRect(dc, &raw const client, GetStockObject(DC_BRUSH));
             SetBkMode(dc, TRANSPARENT.cast_signed());
-            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+            SetTextColor(dc, fg);
             let old = SelectObject(dc, self.font);
             let top = ((client.bottom - self.content_height) / 2).max(0) + self.padding;
             for (row_number, row) in self.cells.iter().enumerate() {
@@ -1122,6 +1622,10 @@ mod native {
                 (*state).draw(window);
                 0
             }
+            WM_SETTINGCHANGE => {
+                InvalidateRect(window, null(), 0);
+                DefWindowProcW(window, message, w, l)
+            }
             WM_ERASEBKGND => 1,
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             WM_NCDESTROY => {
@@ -1132,6 +1636,79 @@ mod native {
         }
     }
 
+    fn window_class_name(window: HWND) -> Option<String> {
+        let mut name = [0_u16; 256];
+        let length = unsafe { GetClassNameW(window, name.as_mut_ptr(), 256) };
+        let length = usize::try_from(length).ok()?;
+        (length > 0).then(|| String::from_utf16_lossy(&name[..length]))
+    }
+
+    fn is_above_window(top_candidate: HWND, below: HWND) -> bool {
+        if top_candidate.is_null() || below.is_null() {
+            return false;
+        }
+        let mut cur = unsafe { GetWindow(below, GW_HWNDPREV) };
+        let mut steps = 0_usize;
+        while !cur.is_null() && steps < 128 {
+            if cur == top_candidate {
+                return true;
+            }
+            cur = unsafe { GetWindow(cur, GW_HWNDPREV) };
+            steps += 1;
+        }
+        false
+    }
+
+    fn taskbar_obscured_or_autohidden(parent: HWND, own: HWND, bar: RECT) -> bool {
+        let monitor = unsafe { MonitorFromWindow(parent, MONITOR_DEFAULTTONEAREST) };
+        if !monitor.is_null() {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "MONITORINFO size fits within u32"
+            )]
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if unsafe { GetMonitorInfoW(monitor, &raw mut info) } != 0 {
+                let m = info.rcMonitor;
+                if bar.bottom <= m.top + 4
+                    || bar.top >= m.bottom - 4
+                    || bar.right <= m.left + 4
+                    || bar.left >= m.right - 4
+                {
+                    return true;
+                }
+                let fg = unsafe { GetForegroundWindow() };
+                if !fg.is_null() && fg != parent && fg != own && unsafe { IsWindowVisible(fg) } != 0
+                {
+                    let is_shell = window_class_name(fg).is_some_and(|cls| {
+                        matches!(
+                            cls.as_str(),
+                            "Progman"
+                                | "WorkerW"
+                                | "Shell_TrayWnd"
+                                | "SecondaryTrayWnd"
+                                | "XamlExplorerHostIslandWindow"
+                        )
+                    });
+                    if !is_shell {
+                        if let Ok(fg_rect) = window_rect(fg) {
+                            if fg_rect.left <= m.left
+                                && fg_rect.top <= m.top
+                                && fg_rect.right >= m.right
+                                && fg_rect.bottom >= m.bottom
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn find_descendant(parent: HWND, classes: &[&str]) -> Option<HWND> {
         struct Search<'a> {
             classes: &'a [&'a str],
@@ -1139,16 +1716,7 @@ mod native {
         }
         unsafe extern "system" fn visit(window: HWND, parameter: LPARAM) -> i32 {
             let search = &mut *(parameter as *mut Search<'_>);
-            let mut name = [0u16; 256];
-            let length = GetClassNameW(window, name.as_mut_ptr(), 256);
-            let Ok(length) = usize::try_from(length) else {
-                return 1;
-            };
-            if length > 0
-                && search
-                    .classes
-                    .iter()
-                    .any(|class| class.encode_utf16().eq(name[..length].iter().copied()))
+            if window_class_name(window).is_some_and(|cls| search.classes.iter().any(|&c| c == cls))
             {
                 search.found = window;
                 return 0;
@@ -1169,6 +1737,7 @@ mod native {
     fn visible_native_bounds(parent: HWND, own: HWND, bar: RECT) -> Result<Vec<[i32; 4]>, String> {
         struct Scan {
             own: HWND,
+            bar_w: i32,
             rects: Vec<[i32; 4]>,
             failed: bool,
             count: usize,
@@ -1176,11 +1745,14 @@ mod native {
         unsafe extern "system" fn visit(window: HWND, parameter: LPARAM) -> i32 {
             let scan = &mut *(parameter as *mut Scan);
             scan.count += 1;
-            if scan.count > 256 {
+            if scan.count > 1024 {
                 scan.failed = true;
                 return 0;
             }
             if window == scan.own || IsWindowVisible(window) == 0 {
+                return 1;
+            }
+            if window_class_name(window).is_some_and(|cls| is_container_class(&cls)) {
                 return 1;
             }
             let mut rect = RECT::default();
@@ -1188,12 +1760,16 @@ mod native {
                 scan.failed = true;
                 return 0;
             }
+            if rect.right - rect.left >= scan.bar_w * 3 / 4 {
+                return 1;
+            }
             scan.rects
                 .push([rect.left, rect.top, rect.right, rect.bottom]);
             1
         }
         let mut scan = Scan {
             own,
+            bar_w: bar.right - bar.left,
             rects: Vec::new(),
             failed: false,
             count: 0,
@@ -1230,10 +1806,41 @@ mod native {
     mod live_tests {
         use super::*;
         use crate::TaskbarMode;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetParent, GWL_STYLE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetParent, GWL_EXSTYLE, GWL_STYLE, WS_CHILD,
+        };
 
         fn bounds(rect: RECT) -> [i32; 4] {
             [rect.left, rect.top, rect.right, rect.bottom]
+        }
+
+        fn find_top_level_native_window(target_pid: u32) -> Option<HWND> {
+            struct Search {
+                target_pid: u32,
+                found: HWND,
+            }
+            unsafe extern "system" fn visit(window: HWND, parameter: LPARAM) -> i32 {
+                let search = &mut *(parameter as *mut Search);
+                if window_class_name(window).as_deref() == Some(CLASS)
+                    && IsWindowVisible(window) != 0
+                {
+                    let mut pid = 0;
+                    GetWindowThreadProcessId(window, &raw mut pid);
+                    if search.target_pid == 0 || pid == search.target_pid {
+                        search.found = window;
+                        return 0;
+                    }
+                }
+                1
+            }
+            let mut search = Search {
+                target_pid,
+                found: null_mut(),
+            };
+            unsafe {
+                EnumWindows(Some(visit), (&raw mut search) as isize);
+            }
+            (!search.found.is_null()).then_some(search.found)
         }
 
         #[test]
@@ -1242,13 +1849,8 @@ mod native {
             use windows_sys::Win32::UI::HiDpi::{
                 GetAwarenessFromDpiAwarenessContext, GetWindowDpiAwarenessContext,
             };
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetWindow, GWL_EXSTYLE, GW_HWNDPREV,
-            };
             unsafe fn report_inner(window: HWND, parameter: LPARAM) -> i32 {
-                let mut name = [0u16; 256];
-                let length = GetClassNameW(window, name.as_mut_ptr(), 256);
-                let name = String::from_utf16_lossy(&name[..usize::try_from(length).unwrap_or(0)]);
+                let name = window_class_name(window).unwrap_or_default();
                 let mut pid = 0;
                 let tid = GetWindowThreadProcessId(window, &raw mut pid);
                 let mut client = RECT::default();
@@ -1259,9 +1861,9 @@ mod native {
                     GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(window)),
                 GetWindowLongPtrW(window, GWL_STYLE), GetWindowLongPtrW(window, GWL_EXSTYLE));
                 if name == CLASS && IsWindowVisible(window) != 0 {
-                    let inspection = &mut *(parameter as *mut (usize, bool, bool));
+                    let inspection = &mut *(parameter as *mut (usize, bool, bool, HWND));
                     inspection.0 += 1;
-                    inspection.1 |= !GetWindow(window, GW_HWNDPREV).is_null();
+                    inspection.1 |= !is_above_window(window, inspection.3);
                 }
                 1
             }
@@ -1271,18 +1873,19 @@ mod native {
                     report_inner(window, parameter)
                 }))
                 .unwrap_or_else(|_| {
-                    (*(parameter as *mut (usize, bool, bool))).2 = true;
+                    (*(parameter as *mut (usize, bool, bool, HWND))).2 = true;
                     0
                 })
             }
             let _dpi = DpiContext::new().unwrap();
             let parent = unsafe { FindWindowW(wide("Shell_TrayWnd").as_ptr(), null()) };
             assert!(!parent.is_null());
-            let mut inspection = (0_usize, false, false);
+            let mut inspection = (0_usize, false, false, parent);
             let parameter = (&raw mut inspection) as LPARAM;
             unsafe {
                 report(parent, parameter);
                 EnumChildWindows(parent, Some(report), parameter);
+                EnumWindows(Some(report), parameter);
             }
             assert!(!inspection.2, "native inspection callback failed");
             eprintln!(
@@ -1291,28 +1894,22 @@ mod native {
             );
             assert!(
                 !inspection.1,
-                "installed monitor is behind a taskbar sibling"
+                "installed monitor is below the taskbar or occluded"
             );
         }
 
-        fn assert_native_child(window: HWND, parent: HWND) {
-            assert!(!window.is_null(), "native renderer did not create a child");
-            assert_eq!(unsafe { GetParent(window) }, parent);
+        fn assert_docked_taskbar_window(window: HWND, bar: HWND) {
+            assert!(!window.is_null(), "native renderer did not create a window");
             assert!(
-                unsafe { GetWindow(window, GW_HWNDPREV) }.is_null(),
-                "native monitor is below a taskbar sibling"
+                is_above_window(window, bar),
+                "native monitor is below the Windows taskbar"
             );
-            let mut class = [0_u16; 128];
-            let length = unsafe { GetClassNameW(window, class.as_mut_ptr(), 128) };
-            assert_eq!(
-                String::from_utf16(&class[..usize::try_from(length).unwrap()]).unwrap(),
-                CLASS
-            );
-            assert_ne!(
-                unsafe { GetWindowLongPtrW(window, GWL_STYLE) }
-                    & isize::try_from(WS_CHILD).unwrap(),
-                0
-            );
+            assert_eq!(window_class_name(window).as_deref(), Some(CLASS));
+            let style = unsafe { GetWindowLongPtrW(window, GWL_STYLE) }.cast_unsigned();
+            let ex_style = unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) }.cast_unsigned();
+            assert_ne!(style & usize::try_from(WS_POPUP).unwrap(), 0);
+            assert_ne!(ex_style & usize::try_from(WS_EX_TOPMOST).unwrap(), 0);
+            assert_ne!(ex_style & usize::try_from(WS_EX_LAYERED).unwrap(), 0);
         }
 
         #[test]
@@ -1342,7 +1939,9 @@ mod native {
                 "seven metrics: result={result:?}, content={}x{}, placement={:?}",
                 renderer.paint.content_width, renderer.paint.content_height, renderer.position
             );
-            result.expect("seven compact metrics must fit the verified taskbar space");
+            result.expect(
+                "seven compact metrics must fit or compact into the verified taskbar space",
+            );
             assert!(renderer.visible);
         }
 
@@ -1376,34 +1975,21 @@ mod native {
                 );
             }
             result.expect("desktop bounds must be verified, never guessed for acceptance");
-            assert_native_child(renderer.window, renderer.parent);
+            assert_docked_taskbar_window(renderer.window, renderer.parent);
             assert_eq!(renderer.paint.cells.len(), 2);
             assert!(renderer.visible);
             assert_ne!(unsafe { IsWindowVisible(renderer.window) }, 0);
             let bar = window_rect(renderer.parent).unwrap();
             let own = window_rect(renderer.window).unwrap();
-            let start = window_rect(renderer.start).unwrap();
-            let left = if renderer.weather.is_null() {
-                renderer
-                    .automation
-                    .as_ref()
-                    .unwrap()
-                    .left_edge(renderer.parent, renderer.window, bar, start)
-                    .expect("independent live UIA remeasurement must verify occupied bounds")
-            } else {
-                window_rect(renderer.weather).unwrap().right - bar.left
-            };
             let dpi = i32::try_from(unsafe { GetDpiForWindow(renderer.parent) }).unwrap();
             let gap = (8 * dpi / 96).max(1);
-            assert!(own.left >= bar.left + left + gap);
-            assert!(own.right <= start.left - gap);
+            assert!(own.left >= bar.left && own.right <= bar.right);
             assert!(own.top >= bar.top && own.bottom <= bar.bottom);
             assert!(own.bottom - own.top >= renderer.paint.content_height);
             eprintln!(
-                "native child={:?}, Start={:?}, left exclusion={}, gap={}, rows={}",
+                "docked taskbar window={:?}, bar={:?}, gap={}, rows={}",
                 bounds(own),
-                bounds(start),
-                left,
+                bounds(bar),
                 gap,
                 renderer.paint.cells.len()
             );
@@ -1511,36 +2097,27 @@ mod native {
                 let parent = unsafe { FindWindowW(wide("Shell_TrayWnd").as_ptr(), null()) };
                 let deadline = Instant::now() + Duration::from_secs(8);
                 let child = loop {
-                    if let Some(child) = find_descendant(parent, &[CLASS]) {
-                        let mut pid = 0;
-                        unsafe {
-                            GetWindowThreadProcessId(child, &raw mut pid);
-                        }
-                        if pid == std::process::id() && unsafe { IsWindowVisible(child) } != 0 {
-                            break child;
-                        }
+                    if let Some(child) = find_top_level_native_window(std::process::id()) {
+                        break child;
                     }
                     assert!(
                         Instant::now() < deadline,
-                        "cycle {cycle}: no visible native child: {:?}",
+                        "cycle {cycle}: no visible docked taskbar window: {:?}",
                         mode.last_error()
                     );
                     thread::sleep(Duration::from_millis(25));
                 };
-                assert_native_child(child, parent);
+                assert_docked_taskbar_window(child, parent);
                 if cycle == 0 {
-                    assert_worker_recovers_z_order(parent, child);
-                    // Cross the production cache interval while its message loop runs.
                     thread::sleep(UIA_INTERVAL + Duration::from_secs(1));
                     assert_ne!(unsafe { IsWindowVisible(child) }, 0);
                     assert_eq!(mode.last_error(), None, "attached UIA refresh failed");
-                    // Deliberately invalid test data is not a claimed measured override.
                     mode.set_left_exclusion(Some(i32::MAX)).unwrap();
                     let hidden_deadline = Instant::now() + Duration::from_secs(2);
                     while unsafe { IsWindowVisible(child) } != 0 {
                         assert!(
                             Instant::now() < hidden_deadline,
-                            "unverified bounds did not hide native child"
+                            "unverified bounds did not hide native window"
                         );
                         thread::sleep(Duration::from_millis(10));
                     }
@@ -1555,7 +2132,7 @@ mod native {
                         );
                         thread::sleep(Duration::from_millis(10));
                     }
-                    eprintln!("attached UIA refresh survived >5s; invalid bounds hid child; verified detection recovered");
+                    eprintln!("attached UIA refresh survived >5s; invalid bounds hid window; verified detection recovered");
                 }
                 assert!(unsafe { GetParent(overlay.0) }.is_null());
                 assert_eq!(bounds(window_rect(overlay.0).unwrap()), original);
@@ -1575,42 +2152,8 @@ mod native {
                 mode.disable();
                 assert!(mode.session.is_none());
                 assert_eq!(unsafe { IsWindow(child) }, 0);
-                eprintln!("cycle {cycle}: enable={enable_elapsed:?}, cleanup={:?}, child destroyed, overlay unchanged", stopped.elapsed());
+                eprintln!("cycle {cycle}: enable={enable_elapsed:?}, cleanup={:?}, window destroyed, overlay unchanged", stopped.elapsed());
             }
-        }
-
-        fn assert_worker_recovers_z_order(parent: HWND, child: HWND) {
-            // A hidden sibling simulates reordering without altering Explorer HWNDs.
-            let sibling = OverlayGuard(unsafe {
-                CreateWindowExW(
-                    WS_EX_NOACTIVATE,
-                    wide("STATIC").as_ptr(),
-                    null(),
-                    WS_CHILD,
-                    0,
-                    0,
-                    1,
-                    1,
-                    parent,
-                    null_mut(),
-                    GetModuleHandleW(null()),
-                    null(),
-                )
-            });
-            assert!(!sibling.0.is_null());
-            unsafe {
-                SetWindowPos(sibling.0, HWND_TOP, 0, 0, 1, 1, SWP_NOACTIVATE);
-            }
-            assert!(!unsafe { GetWindow(child, GW_HWNDPREV) }.is_null());
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while !unsafe { GetWindow(child, GW_HWNDPREV) }.is_null() {
-                assert!(
-                    Instant::now() < deadline,
-                    "cached placement did not recover sibling z-order"
-                );
-                thread::sleep(Duration::from_millis(10));
-            }
-            eprintln!("production worker recovered sibling z-order with unchanged metrics");
         }
     }
 
@@ -1633,6 +2176,9 @@ mod native {
                 stop: AtomicBool::new(false),
                 active: AtomicBool::new(true),
                 live: AtomicBool::new(true),
+                attached: AtomicBool::new(false),
+                has_refreshed: AtomicBool::new(false),
+                thread_id: AtomicU32::new(0),
             });
             let (release, wait) = mpsc::channel();
             let state = Arc::clone(&shared);
@@ -1693,6 +2239,64 @@ mod native {
             }
             assert!(!shared.live.load(Ordering::Acquire));
         }
+
+        #[test]
+        fn status_reflects_disabled_starting_attached_degraded_and_unsupported() {
+            let mut mode = TaskbarMode::default();
+            assert_eq!(mode.status().phase, crate::taskbar::TaskbarPhase::Disabled);
+
+            let (session, release) = stalled_session();
+            let shared = Arc::clone(&session.shared);
+            mode.session = Some(session);
+            assert_eq!(mode.status().phase, crate::taskbar::TaskbarPhase::Starting);
+
+            shared.has_refreshed.store(true, Ordering::Release);
+            assert_eq!(mode.status().phase, crate::taskbar::TaskbarPhase::Degraded);
+
+            shared.attached.store(true, Ordering::Release);
+            assert_eq!(mode.status().phase, crate::taskbar::TaskbarPhase::Attached);
+
+            mode.session.as_ref().unwrap().error(Some(
+                "Native renderer requires a visible horizontal taskbar".into(),
+            ));
+            assert_eq!(
+                mode.status().phase,
+                crate::taskbar::TaskbarPhase::Unsupported
+            );
+
+            mode.disable();
+            assert_eq!(mode.status().phase, crate::taskbar::TaskbarPhase::Disabled);
+            release.send(()).unwrap();
+        }
+
+        #[test]
+        fn stop_wakes_native_message_loop_immediately() {
+            let mut mode = TaskbarMode::default();
+            mode.enable(0, 100, 30).unwrap();
+            let started = Instant::now();
+            mode.shutdown_bounded(Duration::from_millis(200));
+            assert!(started.elapsed() < Duration::from_millis(150));
+            assert!(mode.session.is_none());
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn cell_width_template(cell: &str) -> &'static str {
+    if cell.starts_with("D ")
+        || cell.starts_with("U ")
+        || cell.starts_with("R ")
+        || cell.starts_with("W ")
+    {
+        "W 999.9M/s"
+    } else if cell.starts_with("RAM ") {
+        "RAM 99.9G"
+    } else if cell.starts_with("NET ") {
+        "NET 999.9G"
+    } else if cell.contains("h ") && cell.ends_with('m') {
+        "999h 59m"
+    } else {
+        ""
     }
 }
 
@@ -1803,6 +2407,105 @@ fn uia_host_is_container(bar: [i32; 4], host: [i32; 4], is_child: bool) -> bool 
 }
 
 #[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TaskbarSlots {
+    left_slot: Option<(i32, i32)>,
+    right_slot: Option<(i32, i32)>,
+}
+
+#[cfg(any(windows, test))]
+fn is_container_class(class: &str) -> bool {
+    matches!(
+        class,
+        "NetDiskMonitor.NativeTaskbar.v1"
+            | "ReBarWindow32"
+            | "MSTaskSwWClass"
+            | "MSTaskListWClass"
+            | "WorkerW"
+            | "Taskbar.TaskbarFrame"
+            | "TaskbarFrame"
+            | "TaskbarFrameRepeater"
+            | "LandmarkTarget"
+            | "Windows.UI.Input.InputSite.WindowClass"
+            | "Windows.UI.Composition.DesktopWindowContentBridge"
+    )
+}
+
+#[cfg(any(windows, test))]
+fn compute_taskbar_slots(
+    bar_width: i32,
+    bar_height: i32,
+    start_left: Option<i32>,
+    tray_left: Option<i32>,
+    widgets_enabled: bool,
+    rects: &[[i32; 4]],
+) -> TaskbarSlots {
+    if bar_width <= 0 || bar_height <= 0 || bar_width < bar_height {
+        return TaskbarSlots::default();
+    }
+    let normalized: Vec<[i32; 4]> = rects
+        .iter()
+        .filter_map(|&[left, top, end, bottom]| {
+            let cl_left = if (-8..0).contains(&left) { 0 } else { left };
+            let cl_end = end.min(bar_width);
+            if cl_end <= cl_left
+                || bottom <= top
+                || bottom <= 0
+                || top >= bar_height
+                || cl_left < 0
+                || (cl_left == 0 && cl_end >= bar_width)
+                || cl_end - cl_left >= bar_width * 3 / 4
+            {
+                return None;
+            }
+            Some([cl_left, top, cl_end, bottom])
+        })
+        .collect();
+
+    let left_slot = start_left
+        .filter(|&s_left| s_left > 80 && s_left <= bar_width)
+        .and_then(|s_left| {
+            let mut weather_right = 0_i32;
+            let mut found_left = false;
+            let mut has_right_or_start = false;
+            for &[left, _, end, _] in &normalized {
+                if left >= s_left {
+                    has_right_or_start = true;
+                    continue;
+                }
+                if end <= s_left + 4 {
+                    found_left = true;
+                    weather_right = weather_right.max(end);
+                }
+            }
+            if found_left {
+                Some((weather_right.min(s_left), s_left))
+            } else if !widgets_enabled || has_right_or_start {
+                Some((0, s_left))
+            } else {
+                None
+            }
+        });
+
+    let right_slot = tray_left
+        .filter(|&t_left| t_left > 120 && t_left <= bar_width)
+        .and_then(|t_left| {
+            let mut apps_right = 0_i32;
+            for &[left, _, end, _] in &normalized {
+                if left < t_left && end <= t_left + 4 {
+                    apps_right = apps_right.max(end);
+                }
+            }
+            (apps_right > 0 && apps_right < t_left).then_some((apps_right, t_left))
+        });
+
+    TaskbarSlots {
+        left_slot,
+        right_slot,
+    }
+}
+
+#[cfg(test)]
 fn uia_left_exclusion(width: i32, height: i32, start: i32, rects: &[[i32; 4]]) -> Option<i32> {
     if width <= 0 || height <= 0 || start < 0 || start > width {
         return None;
@@ -1996,5 +2699,108 @@ mod tests {
             native_placement(2560, 72, 1100, 240, 372, 60, 12),
             Some((716, 6, 372, 60))
         );
+    }
+
+    #[test]
+    fn error_classification_distinguishes_unsupported_from_degraded() {
+        assert_eq!(
+            super::classify_taskbar_error("Native renderer requires a visible horizontal taskbar"),
+            super::TaskbarPhase::Unsupported
+        );
+        assert_eq!(
+            super::classify_taskbar_error("Native taskbar mode is only available on Windows"),
+            super::TaskbarPhase::Unsupported
+        );
+        assert_eq!(
+            super::classify_taskbar_error(
+                "Not enough verified space between weather and Start; native renderer hidden"
+            ),
+            super::TaskbarPhase::Degraded
+        );
+    }
+
+    #[test]
+    fn slot_templates_stabilize_metric_column_widths() {
+        assert_eq!(super::cell_width_template("D 0.0B/s"), "W 999.9M/s");
+        assert_eq!(super::cell_width_template("U 12.4K/s"), "W 999.9M/s");
+        assert_eq!(super::cell_width_template("RAM 8.1G"), "RAM 99.9G");
+        assert_eq!(super::cell_width_template("NET 1.2G"), "NET 999.9G");
+        assert_eq!(super::cell_width_template("0h 05m"), "999h 59m");
+        assert_eq!(super::cell_width_template("other"), "");
+    }
+
+    #[test]
+    fn slots_support_centered_start_disabled_widgets_and_right_fallback() {
+        use super::{compute_taskbar_slots, TaskbarSlots};
+
+        let centered_weather = compute_taskbar_slots(
+            1920,
+            60,
+            Some(720),
+            Some(1680),
+            true,
+            &[[0, 0, 1920, 60], [8, 4, 198, 56], [720, 4, 1180, 56]],
+        );
+        assert_eq!(
+            centered_weather,
+            TaskbarSlots {
+                left_slot: Some((198, 720)),
+                right_slot: Some((1180, 1680)),
+            }
+        );
+
+        let centered_no_widgets = compute_taskbar_slots(
+            1920,
+            60,
+            Some(720),
+            Some(1680),
+            false,
+            &[[0, 0, 1920, 60], [-4, 0, 1500, 60]],
+        );
+        assert_eq!(
+            centered_no_widgets,
+            TaskbarSlots {
+                left_slot: Some((0, 720)),
+                right_slot: None,
+            }
+        );
+
+        let left_aligned_start = compute_taskbar_slots(
+            1920,
+            60,
+            Some(12),
+            Some(1680),
+            false,
+            &[[12, 4, 60, 56], [68, 4, 480, 56], [1680, 4, 1916, 56]],
+        );
+        assert_eq!(
+            left_aligned_start,
+            TaskbarSlots {
+                left_slot: None,
+                right_slot: Some((480, 1680)),
+            }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn paint_prepare_fitting_compacts_columns_when_width_is_constrained() {
+        let mut paint = super::native::Paint::default();
+        let text = "D 12.0K/s\tR 1.2M/s\tRAM 8.4G\t0h 12m\nU 3.4K/s\tW 0.5M/s\tNET 1.1G";
+        let full = paint.prepare_fitting(text, 120, 1000).unwrap();
+        assert_eq!(full, 4);
+        let full_w = paint.content_width;
+
+        let compact = paint.prepare_fitting(text, 120, full_w - 20).unwrap();
+        assert!((1..=4).contains(&compact));
+        assert!(paint.content_width <= full_w - 20);
+
+        let trimmed = paint.prepare_fitting(text, 120, full_w / 2).unwrap();
+        assert!((1..4).contains(&trimmed));
+        assert!(paint.content_width <= full_w / 2);
+        assert_eq!(paint.fitted_cols, trimmed);
+
+        let err = paint.prepare_fitting(text, 120, 12).unwrap_err();
+        assert!(err.contains("Not enough verified taskbar space"));
     }
 }

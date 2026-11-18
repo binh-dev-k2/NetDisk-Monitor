@@ -57,7 +57,7 @@ export function ProcessTableHeader({
             }}
           />
           {searchTerm && (
-            <button className="clear-search" onClick={() => setSearchTerm('')} title="Xóa tìm kiếm">
+            <button type="button" className="clear-search" onClick={() => setSearchTerm('')} title="Xóa tìm kiếm" aria-label="Xóa tìm kiếm">
               <X size={12} />
             </button>
           )}
@@ -80,17 +80,17 @@ export function ProcessTableHeader({
           </select>
         </div>
 
-        <button className="icon-button-text" onClick={exportCSV} title="Xuất danh sách tiến trình ra file CSV">
-          <Download size={14} /> Xuất CSV
+        <button type="button" className="icon-button-text" onClick={exportCSV} title="Xuất danh sách tiến trình ra file CSV">
+          <Download size={14} aria-hidden="true" /> Xuất CSV
         </button>
 
         <div className="dropdown-container" ref={menuRef}>
-          <button className="icon-button-text" aria-expanded={showColumnMenu} onClick={() => setShowColumnMenu(!showColumnMenu)}>
-            <SlidersHorizontal size={14} /> Cột hiển thị
+          <button type="button" className="icon-button-text" aria-expanded={showColumnMenu} onClick={() => setShowColumnMenu(!showColumnMenu)}>
+            <SlidersHorizontal size={14} aria-hidden="true" /> Cột hiển thị
           </button>
           {showColumnMenu && (
             <div className="column-menu-dropdown">
-              <h3>HIỂN THỊ CỘT</h3>
+              <h3>Hiển thị cột</h3>
               <div className="column-checkboxes">
                 {([
                   { key: 'processCount', label: 'Process đang chạy' },

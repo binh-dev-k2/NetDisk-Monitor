@@ -53,4 +53,25 @@ describe('process row states', () => {
     expect(compare(props, { ...props })).toBe(true);
     expect(compare(props, { ...props, group: groupProcesses([{ ...process, sessionNetworkDown: 100, sessionNetworkUp: 200, [key]: 300 }])[0] })).toBe(false);
   });
+  it('renders native application icon images cleanly and updates memo when iconUrl changes', () => {
+    const sampleIcon = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const withIcon = renderToStaticMarkup(<ProcessRow group={groupProcesses([process])[0]} gridStyle={{}}
+      visibleColumns={{ processCount: true }} isExpanded={false} toggleGroup={vi.fn()} handleKillProcess={vi.fn()}
+      pendingKill={null} iconUrl={sampleIcon} />);
+    expect(withIcon).toContain('process-icon-img');
+    expect(withIcon).toContain(sampleIcon);
+    const withoutIcon = render([process]);
+    expect(withoutIcon).toContain('process-app-icon');
+    expect(withoutIcon).not.toContain('process-icon-img');
+    type Props = ComponentProps<typeof ProcessRow>;
+    const compare = (ProcessRow as unknown as { compare: (left: Props, right: Props) => boolean }).compare;
+    const base: Props = { group: groupProcesses([process])[0], gridStyle: {}, visibleColumns: {},
+      isExpanded: false, toggleGroup: vi.fn(), handleKillProcess: vi.fn(), pendingKill: null };
+    expect(compare(base, { ...base, iconUrl: sampleIcon })).toBe(false);
+    const withReveal = renderToStaticMarkup(<ProcessRow group={groupProcesses([process])[0]} gridStyle={{}}
+      visibleColumns={{ processCount: true }} isExpanded={false} toggleGroup={vi.fn()} handleKillProcess={vi.fn()}
+      handleRevealProcess={vi.fn()} pendingKill={null} />);
+    expect(withReveal).toContain('reveal-process-btn');
+    expect(withReveal).toContain('Mở vị trí agent64.exe (PID 4321)');
+  });
 });

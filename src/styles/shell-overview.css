@@ -1,0 +1,133 @@
+@layer layout {
+  .dashboard-container {
+    display: flex;
+    flex-direction: column;
+    block-size: 100dvh;
+    inline-size: 100%;
+    background: var(--bg-app);
+    overflow: hidden;
+  }
+
+  .content-area {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    min-block-size: 0;
+    inline-size: 100%;
+    max-inline-size: 1440px;
+    margin-inline: auto;
+    padding: 16px 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+  }
+
+  .content-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px 16px;
+    padding-block: 4px 12px;
+    border-block-end: 1px solid var(--border-color);
+  }
+
+  .header-left {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    min-inline-size: 0;
+  }
+
+  .app-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-size: var(--text-md);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+  }
+
+  .app-brand-mark {
+    display: grid;
+    place-items: center;
+    inline-size: 28px;
+    block-size: 28px;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    color: var(--accent);
+  }
+
+  .content-header .tabs {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    padding: 3px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+  }
+
+  .content-header .tabs button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-block-size: 30px;
+    padding: 4px 12px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--text-base);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .content-header .tabs button:hover:not(.active) {
+    color: var(--text-primary);
+    background: color-mix(in oklab, var(--bg-panel) 55%, transparent);
+  }
+
+  .content-header .tabs button.active {
+    color: var(--text-primary);
+    background: var(--bg-panel);
+    border-color: var(--border-color);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .system-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .system-status span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-block-size: 26px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
+  .online, .offline {
+    inline-size: 7px;
+    block-size: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .online { background: var(--color-up); }
+  .offline { background: var(--danger); }
+}

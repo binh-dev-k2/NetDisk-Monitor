@@ -8,6 +8,23 @@ ETW trên Windows khi có quyền admin. Kết quả thực nghiệm và giới 
 [hồ sơ kiểm chứng](docs/verification-2026-10-10.md); không đồng nhất việc có code
 với việc đã nghiệm thu mọi cấu hình máy.
 
+## Kiến trúc & Hoàn thiện 24/7 (P0–P4)
+
+Bản hoàn thiện bổ sung và kiểm thử:
+- Giao diện 4 màn hình (**Tổng quan**, **Ứng dụng**, **Lịch sử**, **Cài đặt & Chẩn đoán 24/7**), hỗ trợ Light/Dark/System theme và `tabular-nums`.
+- Chạy nền tối ưu: `PidIdentityCache` tái sử dụng handle tiến trình thay vì mở/đóng mỗi 5s, đếm cả socket IPv6, chỉ emit IPC khi cửa sổ/tab đang mở, và khởi tạo WebView thanh nổi lười (lazy).
+- Thanh nổi (Overlay) và Taskbar/Menu bar bật tắt độc lập; vị trí thanh nổi được kiểm tra đa màn hình và khôi phục an toàn.
+- Taskbar Win32 tự đồng bộ màu sáng/tối, ổn định độ rộng cột chống rung, đánh thức thread ngay khi tắt (`WM_NULL`) và báo trạng thái thực (`Disabled`/`Starting`/`Attached`/`Degraded`/`Unsupported`).
+- Khởi động cùng hệ thống với `--background` và kiểm tra đọc lại (read-back); lưu cấu hình nhị phân `preferences-v2.bin` (tương thích ngược v1).
+
+Xem [Delivery](docs/DELIVERY.md) để biết ranh giới phát hành và các gate vật lý/24h còn mở.
+
+Đo CPU/RAM toàn process tree của một Monitor đang chạy, không tự mở hoặc tắt app:
+
+```powershell
+./scripts/windows-runtime-baseline.ps1 -TargetPid <PID_MONITOR> -DurationSeconds 30
+```
+
 ## Kiến trúc chạy lâu
 
 - Worker tổng máy: 1 giây; worker process: 5 giây, không chặn nhau hoặc UI.
@@ -32,7 +49,7 @@ Probe collector thật (không mở giao diện, không chỉnh autostart):
 
 ## Chạy phát triển
 
-Yêu cầu: Node.js 20+, Rust 1.89+, và các toolchain chính thức của Tauri cho
+Yêu cầu: Node.js 20+, Rust 1.90+, và các toolchain chính thức của Tauri cho
 nền tảng đang dùng.
 
 ```powershell

@@ -14,11 +14,10 @@ import './meter.css';
 type MeterItem = { label: string; value: string; tone: string; icon: ReactElement };
 
 function Meter() {
-  const [inTaskbar, , modeStatus] = useTauriStream<boolean>('get_taskbar_mode', 'taskbar://mode', { defaultValue: false });
-  const [visible] = useTauriStream<boolean>('get_overlay_visible', 'overlay://visibility', { defaultValue: true });
-  const [snapshot, , snapshotStatus] = useTauriStream<SystemSnapshot>('get_snapshot', 'metrics://snapshot', {
+  const [visible, , visibilityStatus] = useTauriStream<boolean>('get_overlay_visible', 'overlay://visibility', { defaultValue: true });
+  const [snapshot, , snapshotStatus] = useTauriStream<SystemSnapshot>('get_system_snapshot', 'metrics://snapshot', {
     defaultValue: emptySnapshot, normalize: systemSnapshot, sequence: snapshotSequence,
-    transition: true, pollInterval: 1000, staleAfter: 3500, enabled: !inTaskbar && visible,
+    transition: true, pollInterval: 1000, staleAfter: 3500, enabled: visible,
   });
   const [settings, , settingsStatus] = useTauriStream<OverlaySettings>('get_overlay_settings', 'overlay://settings', {
     defaultValue: defaultOverlaySettings, normalize: normalizeOverlaySettings,
@@ -36,17 +35,17 @@ function Meter() {
     settings.showSessionTotal && { label: 'Mạng phiên', value: formatBytes(snapshot.sessionNetworkDown + snapshot.sessionNetworkUp), tone: 'total', icon: <Sigma size={15} /> },
     settings.showSessionDuration && { label: 'Thời gian phiên', value: formatDuration(snapshot.sessionDurationSecs), tone: 'duration', icon: <Clock3 size={15} /> },
   ].filter((item): item is MeterItem => Boolean(item)), [settings, snapshot]);
-  const diagnostic = [error, snapshot.storageError, snapshot.taskbarError, snapshotStatus.error, modeStatus.error, settingsStatus.error, pinStatus.error].filter(Boolean).join(' | ') || null;
+  const diagnostic = [error, snapshot.storageError, snapshotStatus.error, visibilityStatus.error, settingsStatus.error, pinStatus.error].filter(Boolean).join(' | ') || null;
   const showStatus = Boolean(diagnostic || snapshotStatus.stale || snapshotStatus.loading);
   const layout = overlayLayout(items.length);
   const height = Math.min(164, layout.height + (showStatus ? 24 : 0));
   useEffect(() => {
-    if (inTaskbar || !visible || modeStatus.loading) return;
+    if (!visible || visibilityStatus.loading) return;
     let disposed = false;
     void invoke('resize_overlay', { width: layout.width, height })
       .catch(failure => { if (!disposed) setError(errorMessage(failure)); });
     return () => { disposed = true; };
-  }, [height, layout.width, inTaskbar, visible, modeStatus.loading]);
+  }, [height, layout.width, visible, visibilityStatus.loading]);
   const command = async (action: () => Promise<void>) => {
     if (pendingRef.current) return;
     pendingRef.current = true;
@@ -64,7 +63,7 @@ function Meter() {
     event.stopPropagation();
     void command(async () => { await invoke('set_overlay_visible', { visible: false }); });
   };
-  if (inTaskbar || !visible) return null;
+  if (!visible) return null;
   const style = { '--meter-opacity': String(settings.opacity / 100), '--meter-columns': String(layout.columns), '--meter-rows': String(layout.rows) } as CSSProperties;
   return <div className="meter-shell" style={style}>
     <div className="meter" aria-label="Network and I/O monitor" onPointerDown={event => {

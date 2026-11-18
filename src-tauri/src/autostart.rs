@@ -16,13 +16,27 @@ fn linux_autostart_path() -> Result<std::path::PathBuf, String> {
         .join("netdisk-monitor.desktop"))
 }
 
+#[cfg(target_os = "windows")]
+struct RegKey(windows_sys::Win32::System::Registry::HKEY);
+
+#[cfg(target_os = "windows")]
+impl Drop for RegKey {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                windows_sys::Win32::System::Registry::RegCloseKey(self.0);
+            }
+        }
+    }
+}
+
 pub fn get_autostart() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
         use crate::taskbar::wide;
         use std::ptr::null_mut;
         use windows_sys::Win32::System::Registry::{
-            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
+            RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
         };
 
         let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -43,26 +57,24 @@ pub fn get_autostart() -> Result<bool, String> {
             if opened != 0 {
                 return Err(format!("Không thể đọc Registry Windows: {opened}"));
             }
-            {
-                let mut type_ = 0;
-                let mut size = 0;
-                let status = RegQueryValueExW(
-                    hkey,
-                    value_name.as_ptr(),
-                    null_mut(),
-                    &raw mut type_,
-                    null_mut(),
-                    &raw mut size,
-                );
-                RegCloseKey(hkey);
-                if status == 2 {
-                    return Ok(false);
-                }
-                if status != 0 {
-                    return Err(format!("Không thể đọc cấu hình khởi động: {status}"));
-                }
-                Ok(type_ == REG_SZ)
+            let _key = RegKey(hkey);
+            let mut type_ = 0;
+            let mut size = 0;
+            let status = RegQueryValueExW(
+                hkey,
+                value_name.as_ptr(),
+                null_mut(),
+                &raw mut type_,
+                null_mut(),
+                &raw mut size,
+            );
+            if status == 2 {
+                return Ok(false);
             }
+            if status != 0 {
+                return Err(format!("Không thể đọc cấu hình khởi động: {status}"));
+            }
+            Ok(type_ == REG_SZ && size > 2)
         }
     }
     #[cfg(target_os = "macos")]
@@ -80,13 +92,48 @@ pub fn get_autostart() -> Result<bool, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_executable_command() -> Result<Vec<u16>, String> {
+fn windows_run_command(path: &std::path::Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
-    let path = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut text = vec![u16::from(b'"')];
     text.extend(path.as_os_str().encode_wide());
-    text.extend([u16::from(b'"'), 0]);
-    Ok(text)
+    text.extend("\" --background\0".encode_utf16());
+    text
+}
+
+#[cfg(target_os = "windows")]
+fn windows_executable_command() -> Result<Vec<u16>, String> {
+    let path = std::env::current_exe().map_err(|e| e.to_string())?;
+    Ok(windows_run_command(&path))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_plist_content(exe: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>com.netdisk.monitor</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>{}</string>\n        <string>--background</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n</dict>\n</plist>",
+        xml_text(exe)
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_desktop_content(exe: &str) -> String {
+    let escaped = exe.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "[Desktop Entry]\nType=Application\nName=NetDisk Monitor\nExec=\"{escaped}\" --background\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+    )
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+fn verify_autostart_readback(enabled: bool) -> Result<bool, String> {
+    let actual = get_autostart()?;
+    if actual != enabled {
+        return Err(if enabled {
+            "Đã ghi cấu hình khởi động cùng hệ thống nhưng kiểm tra lại chưa thấy hiệu lực"
+                .to_owned()
+        } else {
+            "Đã xóa cấu hình khởi động cùng hệ thống nhưng kiểm tra lại vẫn còn tồn tại".to_owned()
+        });
+    }
+    Ok(actual)
 }
 
 pub fn set_autostart(enabled: bool) -> Result<bool, String> {
@@ -95,8 +142,8 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
         use crate::taskbar::wide;
         use std::ptr::null_mut;
         use windows_sys::Win32::System::Registry::{
-            RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER,
-            KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+            RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER, KEY_SET_VALUE,
+            REG_OPTION_NON_VOLATILE, REG_SZ,
         };
 
         let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -123,13 +170,11 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
             {
                 return Err("Không thể truy cập Registry Windows".to_owned());
             }
+            let _key = RegKey(hkey);
 
             if let Some(exe_wide) = exe_wide {
-                let Ok(byte_len) = u32::try_from(exe_wide.len() * 2) else {
-                    RegCloseKey(hkey);
-                    return Err("Đường dẫn chương trình quá dài".to_owned());
-                };
-
+                let byte_len = u32::try_from(exe_wide.len() * 2)
+                    .map_err(|_| "Đường dẫn chương trình quá dài".to_owned())?;
                 let res = RegSetValueExW(
                     hkey,
                     value_name.as_ptr(),
@@ -138,56 +183,43 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
                     exe_wide.as_ptr().cast(),
                     byte_len,
                 );
-                RegCloseKey(hkey);
-                registry_set_result(res, true)
+                let _ = registry_set_result(res, true)?;
             } else {
                 let res = RegDeleteValueW(hkey, value_name.as_ptr());
-                RegCloseKey(hkey);
-                registry_set_result(res, false)
+                let _ = registry_set_result(res, false)?;
             }
         }
+        verify_autostart_readback(enabled)
     }
     #[cfg(target_os = "macos")]
     {
         let path = macos_launch_agent_path()?;
         if enabled {
             let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-            let plist_content = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>com.netdisk.monitor</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>{}</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n</dict>\n</plist>",
-                xml_text(&exe_path.to_string_lossy())
-            );
+            let plist_content = macos_plist_content(&exe_path.to_string_lossy());
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::write(&path, plist_content).map_err(|e| e.to_string())?;
-            Ok(true)
-        } else {
-            if path.exists() {
-                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-            }
-            Ok(false)
+        } else if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
         }
+        verify_autostart_readback(enabled)
     }
     #[cfg(target_os = "linux")]
     {
         let path = linux_autostart_path()?;
         if enabled {
             let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-            let desktop_content = format!(
-                "[Desktop Entry]\nType=Application\nName=NetDisk Monitor\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
-                exe_path.to_string_lossy()
-            );
+            let desktop_content = linux_desktop_content(&exe_path.to_string_lossy());
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::write(&path, desktop_content).map_err(|e| e.to_string())?;
-            Ok(true)
-        } else {
-            if path.exists() {
-                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-            }
-            Ok(false)
+        } else if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
         }
+        verify_autostart_readback(enabled)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
@@ -225,8 +257,34 @@ mod tests {
         assert!(super::registry_set_result(5, false).is_err());
         assert!(super::registry_set_result(5, true).is_err());
     }
+
     #[test]
-    fn launch_agent_paths_are_xml_escaped() {
+    fn launch_agent_paths_are_xml_escaped_and_launch_in_background() {
         assert_eq!(super::xml_text("/A&B/<app>"), "/A&amp;B/&lt;app&gt;");
+        let plist = super::macos_plist_content("/Applications/NetDisk & Monitor.app/MacOS/app");
+        assert!(
+            plist.contains("<string>/Applications/NetDisk &amp; Monitor.app/MacOS/app</string>")
+        );
+        assert!(plist.contains("<string>--background</string>"));
+    }
+
+    #[test]
+    fn linux_desktop_entry_quotes_path_and_launches_in_background() {
+        let entry = super::linux_desktop_content("/opt/NetDisk \"Pro\"\\bin/netdisk");
+        assert!(entry.contains("Exec=\"/opt/NetDisk \\\"Pro\\\"\\\\bin/netdisk\" --background"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_run_command_quotes_executable_and_passes_background_flag() {
+        let encoded = super::windows_run_command(std::path::Path::new(
+            r"C:\Program Files\NetDisk Monitor\netdisk-monitor.exe",
+        ));
+        assert_eq!(encoded.last(), Some(&0));
+        let decoded = String::from_utf16(&encoded[..encoded.len() - 1]).unwrap();
+        assert_eq!(
+            decoded,
+            r#""C:\Program Files\NetDisk Monitor\netdisk-monitor.exe" --background"#
+        );
     }
 }

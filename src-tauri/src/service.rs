@@ -1,40 +1,24 @@
 use crate::{
     collector::{ProcessCollector, SystemCollector},
-    metrics::{CounterSample, MetricsEngine},
-    runtime::{ObservedSample, StopToken},
+    health::{WorkerHealth, WorkerKind},
+    metrics_core::{StorageSample, SystemReducer},
+    runtime::StopToken,
     storage::HistoryRecord,
     MonitorState, OverlaySettings, ProcessSnapshot, SystemSnapshot,
 };
 use std::{
-    sync::{atomic::Ordering, Mutex},
+    sync::{atomic::Ordering, Arc, Mutex, OnceLock},
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
-#[derive(Clone, Copy)]
-pub(crate) struct StorageSample {
-    counters: CounterSample,
-    timestamp: u64,
-    elapsed_millis: u64,
-}
-impl StorageSample {
-    pub(crate) fn observed(self) -> ObservedSample {
-        ObservedSample {
-            timestamp: self.timestamp,
-            elapsed_millis: self.elapsed_millis,
-            bytes: [
-                self.counters.network_down,
-                self.counters.network_up,
-                self.counters.disk_read,
-                self.counters.disk_write,
-            ],
-        }
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct RuntimeState {
+    pub(crate) host_lease: Mutex<Option<crate::host_lease::HostLease>>,
+    pub(crate) health: Arc<WorkerHealth>,
+    pub(crate) log_sink: OnceLock<crate::diagnostics::LogSink>,
+    pub(crate) log_owner: Mutex<Option<crate::diagnostics::LogOwner>>,
     stop: StopToken,
     storage_stop: StopToken,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -43,11 +27,23 @@ pub(crate) struct RuntimeState {
     pub(crate) baseline: Mutex<Option<StorageSample>>,
     pub(crate) storage_error: Mutex<Option<String>>,
     pub(crate) history: Mutex<(Vec<HistoryRecord>, Vec<HistoryRecord>)>,
+    pub(crate) history_clear_requests: Mutex<Vec<std::sync::mpsc::SyncSender<Result<(), String>>>>,
     pub(crate) shutdown_error: Mutex<Option<String>>,
     pub(crate) shutdown_gate: crate::runtime::ShutdownGate,
 }
 
 impl RuntimeState {
+    // Only called by the blocking shutdown task, never under a UI-visible lock.
+    pub fn stop_diagnostics(&self) {
+        let owner = self
+            .log_owner
+            .lock()
+            .ok()
+            .and_then(|mut owner| owner.take());
+        if let Some(mut owner) = owner {
+            let _ = owner.shutdown(Duration::from_millis(500));
+        }
+    }
     pub fn history(&self, resolution: &str, limit: usize) -> Result<Vec<HistoryRecord>, String> {
         let history = self
             .history
@@ -63,6 +59,33 @@ impl RuntimeState {
             .take(limit.min(records.len()))
             .cloned()
             .collect())
+    }
+
+    pub fn history_counts(&self) -> (usize, usize) {
+        self.history
+            .lock()
+            .map(|history| (history.0.len(), history.1.len()))
+            .unwrap_or((0, 0))
+    }
+
+    pub fn clear_history(&self) -> Result<(), String> {
+        let running = self
+            .storage_worker
+            .lock()
+            .ok()
+            .is_some_and(|worker| worker.is_some());
+        if !running {
+            return Err("Luồng lưu trữ lịch sử chưa chạy".to_owned());
+        }
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        self.history_clear_requests
+            .lock()
+            .map_err(|_| "Hàng đợi xóa lịch sử không khả dụng".to_owned())?
+            .push(done_tx);
+        self.storage_stop.wake();
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "Hết thời gian chờ xóa lịch sử".to_owned())?
     }
 
     pub fn shutdown(&self) -> Result<(), String> {
@@ -126,37 +149,32 @@ pub(crate) fn start(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let system = thread::Builder::new()
         .name("monitor-system".into())
         .spawn(move || {
+            let health = system_app
+                .state::<RuntimeState>()
+                .health
+                .start(WorkerKind::System);
             let mut collector = SystemCollector::new();
-            let mut engine = MetricsEngine::default();
             let origin = Instant::now();
-            let mut previous = origin;
+            let mut reducer = SystemReducer::new(origin);
             let mut deadline = origin;
-            let mut sequence = 0_u64;
-            let mut generation = 0;
+            let mut last_taskbar_diag: Option<(crate::taskbar::TaskbarPhase, Option<String>)> =
+                None;
             while system_stop.wait_until(deadline) {
                 let state = system_app.state::<MonitorState>();
                 let current_generation = state.reset_generation.load(Ordering::Acquire);
-                if current_generation != generation {
-                    engine.reset_session_totals();
-                    generation = current_generation;
-                }
                 let collection = collector.collect();
                 let now = Instant::now();
-                let metrics = engine.update(
-                    collection.counters,
-                    now.duration_since(previous).as_secs_f64(),
-                );
-                previous = now;
-                sequence = sequence.saturating_add(1);
-                let runtime = system_app.state::<RuntimeState>();
-                let sample = StorageSample {
-                    counters: collection.counters,
-                    timestamp: SystemTime::now()
+                let frame = reducer.observe(
+                    collection,
+                    now,
+                    SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs(),
-                    elapsed_millis: u64::try_from(origin.elapsed().as_millis()).unwrap_or(u64::MAX),
-                };
+                    current_generation,
+                );
+                let runtime = system_app.state::<RuntimeState>();
+                let sample = frame.storage;
                 if let Ok(mut baseline) = runtime.baseline.lock() {
                     if baseline.is_none() {
                         *baseline = Some(sample);
@@ -165,17 +183,23 @@ pub(crate) fn start(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(mut latest) = runtime.latest.lock() {
                     *latest = Some(sample);
                 }
+                let (active_process_count, process_network_status_error) =
+                    crate::read_process_summary(&state);
                 let snapshot = SystemSnapshot {
-                    metrics,
-                    interfaces: collection.interfaces,
-                    total_memory_bytes: collection.total_memory_bytes,
-                    used_memory_bytes: collection.used_memory_bytes,
-                    disk_available: collection.disk_available,
-                    sequence,
+                    metrics: frame.metrics,
+                    interfaces: frame.interfaces,
+                    total_memory_bytes: frame.total_memory_bytes,
+                    used_memory_bytes: frame.used_memory_bytes,
+                    disk_available: frame.disk_available,
+                    cpu_usage_percent: frame.cpu_usage_percent,
+                    volumes: frame.volumes,
+                    sequence: frame.sequence,
                     storage_error: runtime.storage_error.lock().ok().and_then(|e| e.clone()),
                     taskbar_error: None,
+                    taskbar_status: crate::taskbar::TaskbarStatus::default(),
+                    active_process_count,
+                    process_network_status_error,
                 };
-                #[cfg(windows)]
                 let mut snapshot = snapshot;
                 let settings = state
                     .overlay_settings
@@ -191,19 +215,81 @@ pub(crate) fn start(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     if mode.is_enabled() {
                         mode.update(&taskbar_text(&snapshot, &settings));
                     }
-                    snapshot.taskbar_error = mode.last_error();
+                    let status = mode.status();
+                    snapshot.taskbar_error.clone_from(&status.reason);
+                    snapshot.taskbar_status = status;
                 }
                 #[cfg(target_os = "macos")]
-                if state.taskbar_active.load(Ordering::Acquire) {
-                    crate::update_menu_title(
-                        &system_app,
-                        taskbar_text(&snapshot, &settings).replace(['\n', '\t'], "  "),
+                {
+                    let active = state.taskbar_active.load(Ordering::Acquire);
+                    if active {
+                        crate::update_menu_title(
+                            &system_app,
+                            taskbar_text(&snapshot, &settings).replace(['\n', '\t'], "  "),
+                        );
+                    }
+                    snapshot.taskbar_status = crate::taskbar::TaskbarStatus {
+                        phase: if active {
+                            crate::taskbar::TaskbarPhase::Attached
+                        } else {
+                            crate::taskbar::TaskbarPhase::Disabled
+                        },
+                        desired: active,
+                        attached: active,
+                        reason: None,
+                    };
+                }
+                #[cfg(not(any(windows, target_os = "macos")))]
+                {
+                    let active = state.taskbar_active.load(Ordering::Acquire);
+                    snapshot.taskbar_status = crate::taskbar::TaskbarStatus {
+                        phase: if active {
+                            crate::taskbar::TaskbarPhase::Unsupported
+                        } else {
+                            crate::taskbar::TaskbarPhase::Disabled
+                        },
+                        desired: active,
+                        attached: false,
+                        reason: active
+                            .then(|| "Native taskbar mode is only available on Windows".to_owned()),
+                    };
+                    snapshot
+                        .taskbar_error
+                        .clone_from(&snapshot.taskbar_status.reason);
+                }
+                let current_diag = (
+                    snapshot.taskbar_status.phase,
+                    snapshot.taskbar_status.reason.clone(),
+                );
+                if last_taskbar_diag.as_ref() != Some(&current_diag) {
+                    crate::diagnostics::record(
+                        "taskbar",
+                        &format!(
+                            "phase={:?} attached={} reason={}",
+                            snapshot.taskbar_status.phase,
+                            snapshot.taskbar_status.attached,
+                            snapshot.taskbar_status.reason.as_deref().unwrap_or("none")
+                        ),
                     );
+                    last_taskbar_diag = Some(current_diag);
                 }
-                if let Ok(mut current) = state.snapshot.lock() {
-                    *current = snapshot.clone();
+                let dashboard_visible = state.dashboard_visible.load(Ordering::Acquire);
+                let overlay_visible = state.overlay_visible.load(Ordering::Acquire);
+                if dashboard_visible || overlay_visible {
+                    if let Ok(mut current) = state.snapshot.lock() {
+                        *current = snapshot.clone();
+                    }
+                    if dashboard_visible {
+                        let _ = system_app.emit_to("main", "metrics://snapshot", &snapshot);
+                    }
+                    if overlay_visible {
+                        let _ =
+                            system_app.emit_to("monitor-overlay", "metrics://snapshot", &snapshot);
+                    }
+                } else if let Ok(mut current) = state.snapshot.lock() {
+                    *current = snapshot;
                 }
-                let _ = system_app.emit("metrics://snapshot", snapshot);
+                health.beat();
                 deadline += Duration::from_secs(1);
                 if deadline <= now {
                     deadline = now + Duration::from_secs(1);
@@ -221,6 +307,10 @@ pub(crate) fn start(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let process = thread::Builder::new()
         .name("monitor-processes".into())
         .spawn(move || {
+            let health = process_app
+                .state::<RuntimeState>()
+                .health
+                .start(WorkerKind::Processes);
             let mut collector = ProcessCollector::new();
             let mut sequence = 0_u64;
             let mut generation = 0;
@@ -234,15 +324,26 @@ pub(crate) fn start(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let processes = collector.collect();
                 sequence = sequence.saturating_add(1);
-                let snapshot = ProcessSnapshot {
-                    process_sequence: sequence,
+                let snapshot = ProcessSnapshot::from_observation(
+                    sequence,
                     processes,
-                    process_network_error: collector.network_error(),
-                };
-                if let Ok(mut current) = state.processes.lock() {
-                    *current = snapshot.clone();
+                    collector.network_error(),
+                );
+                let process_warn = snapshot.process_network_error.as_deref().filter(|msg| {
+                    !msg.contains("SeSystemProfilePrivilege") && !msg.starts_with("ETW gaps:")
+                });
+                health.warn(process_warn);
+                let should_emit = state.dashboard_visible.load(Ordering::Acquire)
+                    && state.process_view_active.load(Ordering::Acquire);
+                if should_emit {
+                    if let Ok(mut current) = state.processes.lock() {
+                        *current = snapshot.clone();
+                    }
+                    let _ = process_app.emit_to("main", "processes://snapshot", snapshot);
+                } else if let Ok(mut current) = state.processes.lock() {
+                    *current = snapshot;
                 }
-                let _ = process_app.emit_to("main", "processes://snapshot", snapshot);
+                health.beat();
                 deadline += Duration::from_secs(5);
                 if deadline <= Instant::now() {
                     deadline = Instant::now() + Duration::from_secs(5);

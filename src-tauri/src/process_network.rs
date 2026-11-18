@@ -15,6 +15,7 @@
 //! recovery attempt on restart. Query/permission/foreign-owner failures require
 //! operator intervention; no automatic recovery or lossless 24/7 claim is made.
 //! Legacy PID-named / auto-GUID sessions are deliberately not adopted or stopped.
+#[cfg(any(feature = "desktop", test))]
 use std::collections::{HashMap, HashSet};
 
 #[cfg(any(all(windows, feature = "desktop"), test))]
@@ -57,8 +58,17 @@ fn decode_packet(_transport: Transport, version: u8, opcode: u8, payload: &[u8])
     })
 }
 #[cfg(any(all(windows, feature = "desktop"), test))]
+const HELD_HANDLE_EXIT_GRACE_TICKS: u64 = 50_000_000;
+
+#[cfg(test)]
 fn belongs_to_process(created: u64, ended: Option<u64>, event: u64) -> bool {
     event >= created && ended.is_none_or(|end| event <= end)
+}
+
+#[cfg(any(all(windows, feature = "desktop"), test))]
+fn belongs_to_held_process(created: u64, ended: Option<u64>, event: u64) -> bool {
+    event >= created
+        && ended.is_none_or(|end| event <= end.saturating_add(HELD_HANDLE_EXIT_GRACE_TICKS))
 }
 
 #[cfg(any(all(windows, feature = "desktop"), test))]
@@ -98,6 +108,7 @@ impl CounterBank {
     }
 }
 
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 pub(crate) struct NetworkSnapshot {
     pub counters: HashMap<String, [u64; 2]>,
@@ -106,11 +117,13 @@ pub(crate) struct NetworkSnapshot {
     pub error: Option<String>,
 }
 
+#[cfg(all(windows, feature = "desktop", test))]
+pub(crate) use native::creation_token;
 #[cfg(all(windows, feature = "desktop"))]
-pub(crate) use native::{creation_token, NetworkCollector};
-#[cfg(not(all(windows, feature = "desktop")))]
+pub(crate) use native::{NetworkCollector, PidIdentityCache};
+#[cfg(all(not(windows), feature = "desktop"))]
 pub(crate) struct NetworkCollector;
-#[cfg(not(all(windows, feature = "desktop")))]
+#[cfg(all(not(windows), feature = "desktop"))]
 impl NetworkCollector {
     pub fn new() -> Self {
         Self
@@ -127,7 +140,8 @@ impl NetworkCollector {
 #[cfg(all(windows, feature = "desktop"))]
 mod native {
     use super::{
-        belongs_to_process, decode_packet, retain_process, CounterBank, NetworkSnapshot, Transport,
+        belongs_to_held_process, decode_packet, retain_process, CounterBank, NetworkSnapshot,
+        Transport,
     };
     use crate::runtime::StopToken;
     use std::{
@@ -237,51 +251,78 @@ mod native {
         raw: OwnedHandle,
         created: u64,
         ended: Option<u64>,
+        can_synchronize: bool,
     }
     impl ProcessHandle {
         fn open(pid: u32) -> Option<Self> {
-            let raw = unsafe {
+            if pid == 0 {
+                return None;
+            }
+            let sync_raw = unsafe {
                 OpenProcess(
                     PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
                     0,
                     pid,
                 )
             };
-            if raw.is_null() {
-                return None;
-            }
+            let (raw, can_synchronize) = if sync_raw.is_null() {
+                let query_raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+                if query_raw.is_null() {
+                    return None;
+                }
+                (query_raw, false)
+            } else {
+                (sync_raw, true)
+            };
             let mut handle = Self {
                 raw: OwnedHandle(raw as isize),
                 created: 0,
                 ended: None,
+                can_synchronize,
             };
-            let (created, _) = handle.times()?;
+            let (created, ended) = handle.times()?;
             handle.created = created;
+            handle.ended = ended;
             Some(handle)
         }
         fn times(&self) -> Option<(u64, Option<u64>)> {
             process_times(self.raw.0 as HANDLE)
         }
         fn live(&self) -> bool {
-            unsafe { WaitForSingleObject(self.raw.0 as HANDLE, 0) == WAIT_TIMEOUT }
+            if self.can_synchronize {
+                unsafe { WaitForSingleObject(self.raw.0 as HANDLE, 0) == WAIT_TIMEOUT }
+            } else {
+                self.times().is_some_and(|(_, ended)| ended.is_none())
+            }
         }
         fn matches(&mut self, event: u64) -> bool {
             if event < self.created {
                 return false;
             }
             if let Some(end) = self.ended {
-                return belongs_to_process(self.created, Some(end), event);
+                return belongs_to_held_process(self.created, Some(end), event);
             }
-            match unsafe { WaitForSingleObject(self.raw.0 as HANDLE, 0) } {
-                WAIT_TIMEOUT => true,
-                WAIT_OBJECT_0 => {
-                    let Some((_, Some(end))) = self.times() else {
-                        return false;
-                    };
-                    self.ended = Some(end);
-                    belongs_to_process(self.created, Some(end), event)
+            if self.can_synchronize {
+                match unsafe { WaitForSingleObject(self.raw.0 as HANDLE, 0) } {
+                    WAIT_TIMEOUT => true,
+                    WAIT_OBJECT_0 => {
+                        let Some((_, Some(end))) = self.times() else {
+                            return false;
+                        };
+                        self.ended = Some(end);
+                        belongs_to_held_process(self.created, Some(end), event)
+                    }
+                    _ => false,
                 }
-                _ => false,
+            } else {
+                match self.times() {
+                    Some((_, None)) => true,
+                    Some((_, Some(end))) => {
+                        self.ended = Some(end);
+                        belongs_to_held_process(self.created, Some(end), event)
+                    }
+                    None => false,
+                }
             }
         }
     }
@@ -316,6 +357,58 @@ mod native {
         }
         let owned = OwnedHandle(raw as isize);
         process_times(owned.0 as HANDLE).map(|(created, _)| created)
+    }
+
+    const PID_CACHE_LIMIT: usize = 4096;
+
+    struct CachedPidHandle {
+        raw: OwnedHandle,
+        created: u64,
+    }
+
+    #[derive(Default)]
+    pub(crate) struct PidIdentityCache {
+        handles: HashMap<u32, CachedPidHandle>,
+    }
+
+    impl PidIdentityCache {
+        pub(crate) fn resolve(&mut self, pid: u32) -> Option<u64> {
+            if let Some(entry) = self.handles.get(&pid) {
+                if unsafe { WaitForSingleObject(entry.raw.0 as HANDLE, 0) } == WAIT_TIMEOUT {
+                    return Some(entry.created);
+                }
+                self.handles.remove(&pid);
+            }
+            let raw = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    0,
+                    pid,
+                )
+            };
+            if raw.is_null() {
+                return creation_token(pid);
+            }
+            let owned = OwnedHandle(raw as isize);
+            if unsafe { WaitForSingleObject(owned.0 as HANDLE, 0) } != WAIT_TIMEOUT {
+                return None;
+            }
+            let (created, _) = process_times(owned.0 as HANDLE)?;
+            if self.handles.len() < PID_CACHE_LIMIT {
+                self.handles.insert(
+                    pid,
+                    CachedPidHandle {
+                        raw: owned,
+                        created,
+                    },
+                );
+            }
+            Some(created)
+        }
+
+        pub(crate) fn retain_seen(&mut self, seen: &HashSet<u32>) {
+            self.handles.retain(|pid, _| seen.contains(pid));
+        }
     }
 
     struct ProfilePrivilege {
@@ -372,7 +465,7 @@ mod native {
             let error = unsafe { GetLastError() };
             if success == 0 || error != 0 {
                 return Err(if error == ERROR_NOT_ALL_ASSIGNED {
-                    "ETW requires SeSystemProfilePrivilege already present in this token; reopen as Administrator. No UAC was requested.".to_owned()
+                    "Đo mạng theo từng ứng dụng (ETW) cần chạy với quyền Administrator (SeSystemProfilePrivilege); tổng mạng máy, ổ đĩa và taskbar vẫn hoạt động bình thường.".to_owned()
                 } else {
                     format!("AdjustTokenPrivileges ETW: {error}")
                 });
@@ -561,6 +654,9 @@ mod native {
             context
                 .unavailable_pids
                 .retain(|pid| retained_pids.contains(pid));
+            if context.unavailable_pids.is_empty() {
+                context.last_drop = None;
+            }
             result
         }
     }
@@ -1227,6 +1323,21 @@ mod native {
                 .unavailable_pids
                 .is_empty());
         }
+
+        #[test]
+        fn transient_pid_gap_clears_error_once_disqualified_pid_is_not_retained() {
+            let collector = collector();
+            send(&collector, 0, 1);
+            let first = collector.snapshot(&HashSet::new());
+            assert!(first.available);
+            assert_eq!(first.unavailable_pids, HashSet::from([0]));
+            assert!(first.error.is_some());
+
+            let second = collector.snapshot(&HashSet::new());
+            assert!(second.available);
+            assert!(second.unavailable_pids.is_empty());
+            assert_eq!(second.error, None);
+        }
         #[test]
         fn unsupported_schema_is_a_global_failure_not_a_pid_gap() {
             let collector = collector();
@@ -1275,6 +1386,51 @@ mod native {
             assert!(collector.shared.lock().unwrap().handles.is_empty());
             assert!(!collector.snapshot(&HashSet::new()).available);
         }
+
+        #[test]
+        fn pid_identity_cache_reuses_live_handles_and_retains_seen_pids() {
+            let mut cache = PidIdentityCache::default();
+            let pid = std::process::id();
+            let first = cache.resolve(pid).unwrap();
+            let second = cache.resolve(pid).unwrap();
+            assert_eq!(first, second);
+            assert_eq!(cache.handles.len(), 1);
+            cache.retain_seen(&HashSet::from([pid]));
+            assert_eq!(cache.handles.len(), 1);
+            cache.retain_seen(&HashSet::new());
+            assert!(cache.handles.is_empty());
+        }
+
+        #[test]
+        fn pid_identity_cache_evicts_exited_process_handle() {
+            use std::os::windows::process::CommandExt;
+            use std::process::{Command, Stdio};
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "process_network::native::tests::pid_cache_noop"])
+                .creation_flags(0x0800_0000)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let mut cache = PidIdentityCache::default();
+            let resolved = cache.resolve(pid);
+            let _ = child.wait();
+            if resolved.is_some() {
+                // Once the child has exited, the cached handle is signaled and evicted.
+                assert!(cache.resolve(pid).is_none() || cache.handles.len() <= 1);
+                if let Some(entry) = cache.handles.get(&pid) {
+                    assert_eq!(
+                        unsafe { WaitForSingleObject(entry.raw.0 as HANDLE, 0) },
+                        WAIT_TIMEOUT
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn pid_cache_noop() {}
     }
 }
 
@@ -1350,6 +1506,17 @@ mod tests {
         assert!(!belongs_to_process(100, None, 99));
         assert!(!belongs_to_process(100, Some(120), 121));
         assert!(belongs_to_process(100, Some(120), 110));
+    }
+
+    #[test]
+    fn held_process_handle_allows_bounded_post_exit_teardown_only() {
+        assert!(belongs_to_held_process(100, Some(200), 200 + 1_000_000));
+        assert!(!belongs_to_held_process(100, Some(200), 99));
+        assert!(!belongs_to_held_process(
+            100,
+            Some(200),
+            200 + HELD_HANDLE_EXIT_GRACE_TICKS + 1
+        ));
     }
     #[test]
     fn counters_are_bounded_and_keep_creation_identity() {

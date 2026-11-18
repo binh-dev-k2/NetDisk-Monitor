@@ -40,7 +40,7 @@ export function useProcessTable(processes: ProcessMetric[]) {
   const paginatedGroups = useMemo(() => sortedGroups.slice((clampedPage - 1) * pageSize, clampedPage * pageSize), [sortedGroups, clampedPage, pageSize]);
   const activeColumns = useMemo(() => {
     const columns: Array<{ key: SortColumn; label: string; width: string }> = [
-      { key: 'name', label: 'Ứng dụng', width: 'minmax(160px, 1.8fr)' },
+      { key: 'name', label: 'Ứng dụng', width: 'minmax(185px, 1.9fr)' },
       { key: 'processCount', label: 'Đang chạy', width: 'minmax(70px, .7fr)' },
       { key: 'memory', label: 'RAM', width: 'minmax(85px, .8fr)' },
       { key: 'uptime', label: 'Theo dõi (max)', width: 'minmax(120px, 1fr)' },
@@ -77,8 +77,20 @@ export function useProcessTable(processes: ProcessMetric[]) {
     catch (error) { setActionError(errorMessage(error)); }
     finally { actionPending.current = false; setPendingKill(null); }
   }, []);
+  const handleRevealProcess = useCallback(async (event: MouseEvent, process: ProcessMetric) => {
+    event.stopPropagation();
+    const target = processActionTarget(process);
+    if (!target || actionPending.current) return;
+    actionPending.current = true;
+    setActionError(null);
+    try {
+      const exePath = await invoke<string>('inspect_process_path', { ...target, reveal: true });
+      setExportNotice(`Vị trí tệp: ${exePath}`);
+    } catch (error) { setActionError(errorMessage(error)); }
+    finally { actionPending.current = false; }
+  }, []);
   return { searchTerm, setSearchTerm, pageSize, setPageSize, currentPage, setCurrentPage,
     showColumnMenu, setShowColumnMenu, visibleColumns, setVisibleColumns, activeColumns, gridStyle,
     sortColumn, sortDirection, handleSort, sortedGroups, paginatedGroups, totalPages, clampedPage,
-    expandedGroups, toggleGroup, exportCSV, handleKillProcess, actionError, exportNotice, pendingKill };
+    expandedGroups, toggleGroup, exportCSV, handleKillProcess, handleRevealProcess, actionError, exportNotice, pendingKill };
 }
